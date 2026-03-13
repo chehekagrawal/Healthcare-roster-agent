@@ -7,3 +7,4 @@ langchain-community==0.0.28
 tavily-python==0.3.3
 python-dotenv==1.0.1
 duckdb==0.10.1
+chromadb
