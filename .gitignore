@@ -14,12 +14,30 @@ __pycache__/
 # Python: Virtual Environments
 venv/
 env/
+# Security: API Keys and Secrets
+.env
+
+# Databases
+*.db
+*.sqlite3
+
+# Python: Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python: Virtual Environments
+venv/
+env/
 .venv/
 
 # Operating System Files
 .DS_Store
 Thumbs.db
 
+# Large Data (Optional - list specific files if they are huge)
+# data/*.csv
+memory/
 # Large Data & Target ignores
 # data/*.csv
 memory/chromadb/
