@@ -13,6 +13,21 @@ __pycache__/
 # Python: Virtual Environments
 venv/
 env/
+# Security: API Keys and Secrets
+.env
+
+# Databases
+*.db
+*.sqlite3
+
+# Python: Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python: Virtual Environments
+venv/
+env/
 .venv/
 
 # Operating System Files
@@ -20,4 +35,5 @@ env/
 Thumbs.db
 
 # Large Data (Optional - list specific files if they are huge)
-# data/*.csvmemory/
+# data/*.csv
+memory/
