@@ -3,6 +3,12 @@ packaging<24
 protobuf<5
 
 # ── Core Agent Framework ──
+# ============================================================
+# RosterIQ — Python Dependencies
+# Install with: pip install -r requirements.txt
+# ============================================================
+
+# ── Core Agent Framework ─────────────────────────────────────
 langgraph==0.2.27
 langchain==0.2.16
 langchain-core==0.2.40
@@ -16,7 +22,19 @@ langmem==0.0.18
 
 # ── Data & Analytics (Partner A) ──
 duckdb==0.10.1
+
+# ── LLM ──────────────────────────────────────────────────────
+google-generativeai==0.7.2
+
+# ── Memory Layer (Partner C) ──────────────────────────────────
+chromadb==0.5.3               # Semantic + Episodic vector store
+langmem==0.0.18               # LangMem SDK (episodic/procedural/semantic)
+
+# ── Data Layer (Partner A) ────────────────────────────────────
+duckdb==0.10.1                # In-process SQL analytics on CSVs
 pandas==2.2.1
+
+# ── Visualization (Partner A) ────────────────────────────────
 plotly==5.19.0
 tavily-python==0.3.3
 
@@ -25,3 +43,16 @@ streamlit==1.32.0
 apscheduler==3.10.4
 python-dotenv==1.0.1
 pydantic==2.7.4
+
+# ── Web Search (Partner A) ───────────────────────────────────
+tavily-python==0.3.3
+
+# ── Frontend ──────────────────────────────────────────────────
+streamlit==1.32.0
+
+# ── Monitoring (Partner C) ───────────────────────────────────
+apscheduler==3.10.4
+
+# ── Utilities ────────────────────────────────────────────────
+python-dotenv==1.0.1
+pydantic==2.7.4               # EpisodicEvent model validation
