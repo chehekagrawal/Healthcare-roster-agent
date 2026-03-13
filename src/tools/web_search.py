@@ -52,6 +52,7 @@ class WebSearchTool:
                 
             return {
                 "query_used": templated_query,
+                "context_type": context_type,
                 "results": results
             }
         except Exception as e:
@@ -87,6 +88,12 @@ class WebSearchTool:
         This fulfills the cross-tier reasoning criteria: Tool Output -> Semantic Memory -> Future Reasoning.
         """
         if "error" in search_results:
+            return False
+            
+        context_type = search_results.get("context_type", "general")
+        
+        # Do not store transient or non-reusable lookups
+        if context_type in ["provider_lookup", "general"]:
             return False
             
         from src.memory.semantic import semantic_memory
