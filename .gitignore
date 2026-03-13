@@ -36,7 +36,7 @@ Thumbs.db
 
 # Large Data (Optional - list specific files if they are huge)
 # data/*.csv
-memory/
+
 # Large Data & Target ignores
 # data/*.csv
 memory/chromadb/
