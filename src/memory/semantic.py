@@ -1,7 +1,7 @@
 """
 src/memory/semantic.py
 ======================
-Partner C — Semantic Memory (Domain Knowledge Base)
+Semantic Memory (Domain Knowledge Base)
 ChromaDB-backed store of 40+ healthcare roster pipeline knowledge items.
 
 Usage:

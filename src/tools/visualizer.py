@@ -1,7 +1,7 @@
 """
 visualizations.py
 ==================
-Partner A — Plotly chart generators.
+Plotly chart generators.
 All functions return a Plotly figure object (rendered inline in Streamlit).
 
 IMPORTANT: SCS_PERCENT threshold is 95% (per problem statement).

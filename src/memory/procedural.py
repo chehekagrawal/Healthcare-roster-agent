@@ -1,7 +1,7 @@
 """
 src/memory/procedural.py
 ========================
-Partner C — Procedural Memory (Diagnostic Workflow Registry)
+Procedural Memory (Diagnostic Workflow Registry)
 Manages the 4 parameterized SQL-based procedures used by the agent.
 Allows the LLM to retrieve, run, and update procedures at runtime.
 """
@@ -121,7 +121,7 @@ class ProceduralMemory:
 
     def run_procedure(self, name: str, db_engine: Any, overrides: Dict[str, Any] = None) -> Any:
         """
-        Executes the logic of a procedure using Partner A's duckdb_engine.
+        Executes the logic of a procedure using the duckdb_engine.
         This is a router that delegates to specific execute_* methods based on name.
         """
         if name not in self.procedures:
@@ -147,7 +147,7 @@ class ProceduralMemory:
     
     def _execute_triage(self, db_engine, params):
         # Calls DuckDB to execute triage scoring
-        # (Will hook into Partner A's db wrapper here)
+        # (Will hook into the db wrapper here)
         return {"status": "success", "proc": "triage_stuck_ros", "used_params": params, "data": []}
 
     def _execute_market_health(self, db_engine, params):
