@@ -19,5 +19,7 @@ env/
 .DS_Store
 Thumbs.db
 
-# Large Data (Optional - list specific files if they are huge)
+# Large Data & Target ignores
 # data/*.csv
+memory/chromadb/
+problemstatement.md
