@@ -1,0 +1,70 @@
+{
+  "triage_stuck_ros": {
+    "description": "Finds all IS_STUCK=1 ROs, ranks by composite escalation score",
+    "params": {
+      "red_weight": 5,
+      "yellow_weight": 1,
+      "time_weight": 2,
+      "state_filter": null
+    },
+    "steps": [
+      "SELECT * WHERE IS_STUCK=1",
+      "Derive composite score: (red_flag_count \u00d7 red_weight) + (yellow_flag_count \u00d7 yellow_weight) + (DATEDIFF(NOW, LATEST_OBJECT_RUN_DT) \u00d7 time_weight)",
+      "Rank DESC by composite score",
+      "Surface top 10 with stage, org, LOB, time stuck, and escalation recommendation"
+    ],
+    "version": 2,
+    "updated_at": "2026-03-13",
+    "created_by": "system"
+  },
+  "market_health_report": {
+    "description": "Correlates CSV2 SCS_PERCENT with CSV1 pipeline health flags + stuck RO density for same state",
+    "params": {
+      "scs_threshold": 95.0,
+      "state_filter": null
+    },
+    "steps": [
+      "Aggregate CSV1: count Red flags + IS_STUCK=1 count grouped by CNT_STATE",
+      "Join with CSV2 SCS_PERCENT and OVERALL_SCS_CNT by MARKET=CNT_STATE",
+      "Compute Pearson correlation between flag density and SCS_PERCENT",
+      "Flag markets where SCS_PERCENT < 95% OR where Red flag density is rising",
+      "Surface: state, SCS_PERCENT, stuck_count, red_flag_density, trend direction"
+    ],
+    "version": 1,
+    "updated_at": "2026-03-13",
+    "created_by": "system"
+  },
+  "retry_effectiveness_analysis": {
+    "description": "Derives retry lift rate per market, determines if reprocessing recovers transactions or adds latency",
+    "params": {
+      "min_lift_pct": 5.0,
+      "state_filter": null
+    },
+    "steps": [
+      "CSV1: Group by RO_ID, compare RUN_NO=1 vs MAX(RUN_NO) \u2014 derive health flag improvement (Red\u2192Green count)",
+      "CSV2: Compute retry lift = NEXT_ITER_SCS_CNT / (NEXT_ITER_SCS_CNT + NEXT_ITER_FAIL_CNT) per market",
+      "Correlate CSV1 retry improvement rate with CSV2 NEXT_ITER metrics for same state",
+      "Flag markets where retries add duration (DART_REVIEW_DURATION inflates) without resolving IS_STUCK"
+    ],
+    "version": 1,
+    "updated_at": "2026-03-13",
+    "created_by": "system"
+  },
+  "pipeline_bottleneck_scan": {
+    "description": "Scans all ROs for stage-level duration anomalies, surface systemic bottlenecks",
+    "params": {
+      "anomaly_multiplier": 2.0,
+      "min_affected_ros": 3
+    },
+    "steps": [
+      "Derive per-RO deviation ratio: actual_duration / AVG_<stage>_DURATION for each of 7 stages",
+      "Flag ROs where any deviation ratio > anomaly_multiplier",
+      "Group by stage + CNT_STATE + SRC_SYS: find systemic patterns",
+      "Rank by: number of affected ROs \u00d7 avg deviation ratio",
+      "Output: stage bottleneck summary with org, LOB, and SRC_SYS breakdowns"
+    ],
+    "version": 1,
+    "updated_at": "2026-03-13",
+    "created_by": "system"
+  }
+}
