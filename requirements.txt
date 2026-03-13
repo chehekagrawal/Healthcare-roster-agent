@@ -56,3 +56,4 @@ apscheduler==3.10.4
 # ── Utilities ────────────────────────────────────────────────
 python-dotenv==1.0.1
 pydantic==2.7.4               # EpisodicEvent model validation
+apscheduler==3.10.4
