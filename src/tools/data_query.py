@@ -1,110 +1,132 @@
-import pandas as pd
-import json
 import os
+import json
+import pandas as pd
 from dotenv import load_dotenv
 from langchain_community.tools.tavily_search import TavilySearchResults
+from src.db.duckdb_engine import MetricsEngine
 
-# Load the environment variables from your .env file
+# Load environment variables
 load_dotenv()
 
-# Check if the key is loaded
-if not os.getenv("TAVILY_API_KEY"):
-    print("WARNING: TAVILY_API_KEY not found in .env file!")
-
+# -------------------------------------------------
+# 🌐 WEB SEARCH TOOL (Requirement A5/Web Integration)
+# -------------------------------------------------
 def get_web_search_tool():
     """
-    Returns a search tool the LLM can use.
-    The LLM will call this tool when it needs to look up 
-    regulatory changes or provider organization details.
+    Returns the Tavily search tool for external context.
     """
-    # This automatically picks up the TAVILY_API_KEY from your environment
+    if not os.getenv("TAVILY_API_KEY"):
+        print("WARNING: TAVILY_API_KEY not found!")
     return TavilySearchResults(max_results=3)
 
-# ==========================================
-# 1. DATA LOADING & CLEANING
-# ==========================================
-def load_and_clean_data():
-    """Loads CSVs and does basic cleaning for the tools."""
-    # Assuming the files are in a folder named 'data'
-    df_pipeline = pd.read_csv("data/roster_processing_details.csv")
-    df_market = pd.read_csv("data/aggregated_operational_metrics.csv")
-    
-    # Cleaning CSV 1: Fill missing failure reasons with "None", ensure numeric types
-    df_pipeline['FAILURE_STATUS'] = df_pipeline['FAILURE_STATUS'].fillna("None")
-    df_pipeline['IS_STUCK'] = df_pipeline['IS_STUCK'].fillna(0).astype(int)
-    
-    # Cleaning CSV 2: Ensure market strings are uppercase for easy matching
-    df_market['MARKET'] = df_market['MARKET'].astype(str).str.upper()
-    
-    return df_pipeline, df_market
 
-# ==========================================
-# 2. PROCEDURAL TOOL: Triage Stuck ROs
-# ==========================================
-def triage_stuck_ros() -> str:
+# -------------------------------------------------
+# 📊 DATA QUERY TOOL (Requirement A2/A5 Upgrade)
+# -------------------------------------------------
+class DataQueryTool:
     """
-    Finds all stuck Roster Operations (IS_STUCK=1), ranks them by the number 
-    of RED health flags, and returns the top priority cases as a JSON string.
+    Task A2: Data Query & Metric Derivation.
+    Uses DuckDB (MetricsEngine) to compute operational KPIs and detect anomalies.
     """
-    df_pipeline, _ = load_and_clean_data()
-    
-    # Filter only stuck files
-    stuck_df = df_pipeline[df_pipeline['IS_STUCK'] == 1].copy()
-    
-    if stuck_df.empty:
-        return json.dumps({"status": "All clear", "message": "No stuck ROs found in the pipeline."})
-    
-    # Count 'Red' health flags across all health columns to determine severity
-    health_cols =[col for col in stuck_df.columns if col.endswith('_HEALTH')]
-    stuck_df['RED_FLAG_COUNT'] = (stuck_df[health_cols] == 'Red').sum(axis=1)
-    
-    # Sort by Most Red Flags (Severity)
-    ranked_stuck = stuck_df.sort_values(by='RED_FLAG_COUNT', ascending=False)
-    
-    # Keep only the columns the LLM needs to see to make a decision
-    result_df = ranked_stuck[['RO_ID', 'ORG_NM', 'CNT_STATE', 'LATEST_STAGE_NM', 'RED_FLAG_COUNT', 'FAILURE_STATUS']]
-    
-    # Return top 10 worst stuck files as a JSON string (LLMs read JSON perfectly)
-    return result_df.head(10).to_json(orient="records")
+    def __init__(self, metrics_engine: MetricsEngine):
+        self.engine = metrics_engine
 
-# ==========================================
-# 3. PROCEDURAL TOOL: Market Health Report (Cross-Table Join)
-# ==========================================
-def market_health_report(state_code: str) -> str:
-    """
-    Correlates a market's overall transaction success (CSV 2) 
-    with its pipeline stage health (CSV 1).
-    """
-    df_pipeline, df_market = load_and_clean_data()
-    state_code = state_code.upper()
-    
-    # 1. Get Macro Market Data (CSV 2)
-    market_data = df_market[df_market['MARKET'] == state_code]
-    if market_data.empty:
-        return json.dumps({"error": f"No market data found for state: {state_code}"})
-    
-    # Use the columns that actually exist in your CSV 2
-    avg_market_success = market_data['SCS_PERCENT'].mean()
-    total_fails = market_data['OVERALL_FAIL_CNT'].sum()
-    
-    # 2. Get Pipeline Health Data (CSV 1)
-    state_pipeline = df_pipeline[df_pipeline['CNT_STATE'] == state_code]
-    stuck_files = state_pipeline[state_pipeline['IS_STUCK'] == 1].shape[0]
-    
-    # 3. Combine into an actionable report
-    report = {
-        "Market": state_code,
-        "Overall_Transaction_Success_Rate": f"{avg_market_success:.2f}%",
-        "Total_Failures_In_Market": int(total_fails),
-        "Currently_Stuck_Files_In_Pipeline": stuck_files,
-        "Insight": "By comparing market failures against stuck pipeline files, we can isolate if the issue is a systemic failure or a file-specific stall."
-    }
-    
-    return json.dumps(report)
+    # Task A2.1: Execute validated SQL
+    def query_duckdb(self, sql_query: str):
+        """Executes SQL against the roster and market views."""
+        try:
+            return self.engine.query(sql_query)
+        except Exception as e:
+            return f"SQL Error: {str(e)}"
 
-# --- TEST IT YOURSELF ---
-if __name__ == "__main__":
-    print("--- Testing Triage Tool ---")
-    print(triage_stuck_ros())
-    print("\n--- Testing Market Report Tool (for CA) ---")
-    print(market_health_report("CA"))
+    # Task A2.2 & A5 Upgrade: derive_metrics
+    def derive_metrics(self, metric_type: str, filters: str = ""):
+        """
+        Computes the 5 specific metrics requested in Task A2.
+        Uses the analytical views created in Task A1.2 (schema.sql).
+        """
+        where_clause = f"WHERE {filters}" if filters else ""
+
+        if metric_type == "health":
+            # composite_health_score: Red flag count across 7 stages
+            return self.engine.query(f"SELECT * FROM composite_health_view {where_clause}")
+
+        elif metric_type == "deviation":
+            # duration_deviation: actual / AVG_stage_DURATION
+            return self.engine.query(f"SELECT * FROM duration_deviation_view {where_clause}")
+
+        elif metric_type == "retry":
+            # retry_indicator: RUN_NO > 1 with still-failing status
+            return self.engine.query(f"""
+                SELECT RO_ID, RUN_NO, LATEST_STAGE_NM, FAILURE_STATUS 
+                FROM roster_ops 
+                WHERE RUN_NO > 1 AND IS_FAILED = 1 
+                {filters.replace('WHERE', 'AND') if filters else ''}
+            """)
+
+        elif metric_type == "completion":
+            # pipeline_completion_rate: % of files at status 99
+            return self.engine.query(f"""
+                SELECT 
+                    CNT_STATE, 
+                    COUNT(*) FILTER (WHERE FILE_STATUS_CD = 99) * 1.0 / COUNT(*) AS completion_rate
+                FROM roster_ops 
+                {where_clause}
+                GROUP BY CNT_STATE ORDER BY completion_rate DESC
+            """)
+
+        elif metric_type == "stuck_duration":
+            # Task A2.2: DATEDIFF(NOW, LATEST_OBJECT_RUN_DT)
+            # FIX: Cast current_timestamp to TIMESTAMP to match the column type
+            return self.engine.query(f"""
+                SELECT 
+                    RO_ID, 
+                    ORG_NM,
+                    date_diff('minute', CAST(LATEST_OBJECT_RUN_DT AS TIMESTAMP), CAST(current_timestamp AS TIMESTAMP)) as minutes_stuck
+                FROM roster_ops 
+                WHERE IS_STUCK = 1 
+                {filters.replace('WHERE', 'AND') if filters else ''}
+            """)
+
+        return None
+
+    # Task A2.3: detect_anomalies
+    def detect_anomalies(self, threshold_multiplier: float = 2.0):
+        """
+        Flags ROs where actual duration > N × AVG.
+        N=2 is anomaly, N=3 is critical.
+        """
+        return self.engine.query(f"""
+            SELECT * FROM duration_deviation_view 
+            WHERE dart_deviation > {threshold_multiplier} 
+               OR dart_ui_deviation > {threshold_multiplier} 
+               OR sps_deviation > {threshold_multiplier}
+        """)
+
+    # Task A2.4 & A5 Upgrade: cross_table_join
+    def cross_table_join(self, state: str):
+        """
+        Correlates CSV1 health signals with CSV2 SCS_PERCENT.
+        """
+        return self.engine.query(f"""
+            SELECT * FROM cross_state_health_view 
+            WHERE CNT_STATE = '{state.upper()}'
+        """)
+
+# -------------------------------------------------
+# Task A5: Triage Stuck ROs (DuckDB Version)
+# -------------------------------------------------
+def triage_stuck_ros_v2(engine: MetricsEngine):
+    """
+    Upgraded version of triage: Uses composite health score 
+    from DuckDB to rank stuck files.
+    """
+    sql = """
+    SELECT r.RO_ID, r.ORG_NM, r.LATEST_STAGE_NM, h.composite_health_score
+    FROM roster_ops r
+    JOIN composite_health_view h ON r.RO_ID = h.RO_ID
+    WHERE r.IS_STUCK = 1
+    ORDER BY h.composite_health_score ASC
+    LIMIT 10
+    """
+    return engine.query(sql)
