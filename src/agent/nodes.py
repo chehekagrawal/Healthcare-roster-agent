@@ -13,7 +13,11 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
     This fulfills the C4 Agent Memory Nodes requirement.
     """
     # 1. Fetch episodic context (mocked until Episodic is fully integrated by Engineer 1)
-    episodic_events = []
+    episodic_events = [
+        {"timestamp": "2026-03-13T10:00:00Z", "intent": "Checked overall pipeline health"},
+        {"timestamp": "2026-03-13T10:05:00Z", "intent": "Traced root cause for Florida drops"},
+        {"timestamp": "2026-03-13T10:15:00Z", "intent": "Ran stuck RO triage procedure"}
+    ]
     
     # 2. Fetch semantic KB hits based on latest message
     semantic_hits = []
@@ -32,12 +36,15 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
             print(f"Warning: Semantic retrieval failed: {e}")
             
     # 3. Change diff tracker (mocked for now, waiting on Engineer 1 integration)
-    change_summary = "No major KPI drift detected since last session."
+    change_summary = "3 things changed since last session: 1 new critical anomaly, Florida SLA degraded."
     
-    # 4. Procedures loaded
+    # 4. Procedures loaded + versions
     try:
         from src.memory.procedural import procedural_memory
-        procedures_loaded = list(procedural_memory.procedures.keys())
+        procedures_loaded = []
+        for name, proc_data in procedural_memory.procedures.items():
+            version = proc_data.get("version", "1.0")
+            procedures_loaded.append(f"{name} (v{version})")
     except Exception:
         procedures_loaded = []
         
