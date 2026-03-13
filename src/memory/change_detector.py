@@ -14,10 +14,9 @@ class ChangeDetector:
 
     def detect_all_changes(self):
         """
-        Runs a full comparison of the pipeline and market states.
-        Strictly aligned with Task A4 requirements.
+        Returns structured data for the UI to render professionally.
         """
-        changes = {
+        return {
             "resolutions": self._detect_resolutions(),
             "new_anomalies": self._detect_new_anomalies(),
             "kpi_drift": self._detect_kpi_drift()
