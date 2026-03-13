@@ -179,13 +179,11 @@ class MetricsEngine:
         """)
         return df.to_dict(orient='records')
 
-    def get_market_metrics_snapshot(self):
+    def get_market_kpi_snapshot(self):
         """
         Provides dictionary of current SCS_PERCENT for drift detection.
-        Aligned with Task A4 'KPI Drift' requirement.
         """
         df = self.query("SELECT MARKET, SCS_PERCENT FROM market")
-        # Returns: {'NY': 94.2, 'CA': 98.1, ...}
         return df.set_index('MARKET')['SCS_PERCENT'].to_dict()
 
     def get_stuck_ro_ids(self):
