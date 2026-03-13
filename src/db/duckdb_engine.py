@@ -1,3 +1,4 @@
+import os
 import duckdb
 import pandas as pd
 
@@ -7,28 +8,51 @@ class MetricsEngine:
         """
         Initializes the DuckDB in-memory connection and loads the
         Healthcare Roster datasets. 
-        Strictly aligned with Task A1: Loads CSVs as Views and Tables.
+        Strictly aligned with Task A1.1: Loads CSVs as Views with robust paths.
         """
         # Create in-memory DuckDB connection
         self.con = duckdb.connect(database=':memory:')
 
-        # Task A1: Create roster_ops View (Virtual view for performance)
-        self.con.execute("""
+        # Task A1.1: Calculate robust paths to the data folder
+        # This ensures it works whether you run from root or from tests/
+        base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        roster_path = os.path.join(base_path, "data", "roster_processing_details.csv")
+        market_path = os.path.join(base_path, "data", "aggregated_operational_metrics.csv")
+
+        # Task A1.1: Create roster_ops and market_ops Views
+        self.con.execute(f"""
         CREATE VIEW roster_ops AS 
-        SELECT * FROM read_csv_auto('data/roster_processing_details.csv')
+        SELECT * FROM read_csv_auto('{roster_path}')
         """)
 
-        # Task A1: Create market_ops View
-        self.con.execute("""
+        self.con.execute(f"""
         CREATE VIEW market_ops AS 
-        SELECT * FROM read_csv_auto('data/aggregated_operational_metrics.csv')
+        SELECT * FROM read_csv_auto('{market_path}')
         """)
 
-        # Keep existing Table 'roster' (so your existing 234 lines of code still work)
+        # Keep existing Tables 'roster' and 'market' 
+        # (This ensures your existing 234 lines of SQL logic still work)
         self.con.execute("CREATE TABLE roster AS SELECT * FROM roster_ops")
 
         # Keep existing Table 'market'
         self.con.execute("CREATE TABLE market AS SELECT * FROM market_ops")
+
+        self._load_schema()
+
+    def _load_schema(self):
+        """
+        Task A1.2: Reads and executes the schema.sql file.
+        This creates the composite_health_view and other analytical views.
+        """
+        # schema.sql is in the same folder as this file (src/db/)
+        schema_path = os.path.join(os.path.dirname(__file__), "schema.sql")
+        
+        try:
+            with open(schema_path, 'r') as f:
+                sql_script = f.read()
+                self.con.execute(sql_script)
+        except Exception as e:
+            print(f"Error loading schema.sql: {e}")
 
     # -------------------------------------------------
     # BASIC DATA ACCESS
@@ -46,59 +70,9 @@ class MetricsEngine:
 
     def pipeline_health_score(self):
         """
-        Calculates a numerical 0-1 score based on Green/Yellow/Red flags.
-        This provides the success signal missing from raw counts.
+        Updated to use the View from schema.sql (Task A1.2).
         """
-        return self.query("""
-        SELECT
-            RO_ID,
-            ORG_NM,
-            (
-            CASE PRE_PROCESSING_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE MAPPING_APROVAL_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE ISF_GEN_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE DART_GEN_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE DART_REVIEW_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE DART_UI_VALIDATION_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END +
-
-            CASE SPS_LOAD_HEALTH
-                WHEN 'Green' THEN 1
-                WHEN 'Yellow' THEN 0.5
-                ELSE 0
-            END
-            ) / 7.0 AS pipeline_health_score
-
-        FROM roster
-        """)
+        return self.query("SELECT * FROM composite_health_view")
 
     # -------------------------------------------------
     # DERIVED METRIC 2 — STAGE DELAY RATIOS
@@ -106,27 +80,9 @@ class MetricsEngine:
 
     def stage_delay_ratios(self):
         """
-        Detects time-based anomalies by comparing against AVG duration.
-        Uses NULLIF to prevent division by zero errors.
+        Updated to use the View from schema.sql .
         """
-        return self.query("""
-        SELECT
-            RO_ID,
-
-            DART_GEN_DURATION /
-            NULLIF(AVG_DART_GENERATION_DURATION, 0)
-            AS dart_delay_ratio,
-
-            DART_UI_VALIDATION_DURATION /
-            NULLIF(AVG_DART_UI_VLDTN_DURATION, 0)
-            AS dart_ui_delay_ratio,
-
-            SPS_LOAD_DURATION /
-            NULLIF(AVG_SPS_LOAD_DURATION, 0)
-            AS sps_delay_ratio
-
-        FROM roster
-        """)
+        return self.query("SELECT * FROM duration_deviation_view")
 
     # -------------------------------------------------
     # DERIVED METRIC 3 — RETRY OVERHEAD
