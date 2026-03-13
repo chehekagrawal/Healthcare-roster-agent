@@ -1,5 +1,7 @@
 import sqlite3
 import json
+import chromadb
+from chromadb.config import Settings
 from datetime import datetime
 
 # ==========================================
@@ -8,16 +10,15 @@ from datetime import datetime
 # This database handles both Interaction History (Text) 
 # and Data State Snapshots (KPIs over time).
 DB_NAME = "roster_iq_memory.db"
+# Initialize ChromaDB for Semantic Search (Requirement A4)
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
+episodic_collection = chroma_client.get_or_create_collection(name="episodic_memory")
 
 def init_db():
-    """
-    Creates the memory tables if they don't exist.
-    We use two tables: one for chat, one for data state tracking.
-    """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # TABLE 1: Interaction History (Episodic Chat)
+    # Keep your existing interactions table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS interactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -27,9 +28,22 @@ def init_db():
             agent_response TEXT
         )
     ''')
+
+    # UPDATED for Task A4: Added episodic_events with required columns
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS episodic_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            query_intent TEXT,
+            key_findings TEXT,
+            kpi_snapshot TEXT, 
+            severity TEXT,
+            resolved INTEGER DEFAULT 0,
+            timestamp DATETIME
+        )
+    ''')
     
-    # TABLE 2: Data Snapshots (For Detecting State Changes since last session)
-    # This stores JSON blobs of metrics like 'stuck_ro_ids' or 'market_success_rates'
+    # Keep your existing snapshots table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS data_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,6 +74,34 @@ def log_interaction(session_id: str, user_query: str, agent_response: str):
     ''', (session_id, timestamp, user_query, agent_response))
     conn.commit()
     conn.close()
+
+def log_episodic_event(session_id: str, intent: str, findings: str, kpis: dict, severity: str = "Low"):
+    """
+    Task A4: Logs a high-level investigation event to both SQLite and ChromaDB.
+    This allows for both structured tracking and semantic retrieval.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    kpi_json = json.dumps(kpis)
+
+    # 1. Log to SQLite (Structured Store)
+    cursor.execute('''
+        INSERT INTO episodic_events (session_id, query_intent, key_findings, kpi_snapshot, severity, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (session_id, intent, findings, kpi_json, severity, timestamp))
+    
+    row_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+
+    # 2. Log to ChromaDB (Semantic Store for 'What did we investigate before?')
+    episodic_collection.add(
+        documents=[f"Investigation into {intent}. Findings: {findings}"],
+        metadatas=[{"session_id": session_id, "severity": severity, "sqlite_id": row_id}],
+        ids=[f"event_{row_id}"]
+    )
+    return row_id
 
 # -------------------------------------------------
 # DATA SNAPSHOT LOGGING (State Change Detection)
@@ -129,6 +171,21 @@ def get_history(session_id: str, limit: int = 5) -> str:
         # row[0] is timestamp, row[1] is query, row[2] is response
         history_text += f"Time: {row[0]}\nUser: {row[1]}\nAgent: {row[2]}\n\n"
     return history_text
+
+# -------------------------------------------------
+# SEMANTIC HISTORY RETRIEVAL (Requirement A4)
+# -------------------------------------------------
+
+def retrieve_semantic_history(query: str, n_results: int = 3):
+    """
+    Performs a semantic search over past investigations using ChromaDB.
+    Allows the agent to 'remember' context and past findings across sessions.
+    """
+    results = episodic_collection.query(
+        query_texts=[query],
+        n_results=n_results
+    )
+    return results['documents']
 
 # --- INITIALIZE DATABASE ON IMPORT ---
 init_db()

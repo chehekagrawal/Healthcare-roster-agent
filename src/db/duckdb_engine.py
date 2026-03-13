@@ -6,23 +6,29 @@ class MetricsEngine:
     def __init__(self):
         """
         Initializes the DuckDB in-memory connection and loads the
-        Healthcare Roster datasets.
+        Healthcare Roster datasets. 
+        Strictly aligned with Task A1: Loads CSVs as Views and Tables.
         """
         # Create in-memory DuckDB connection
         self.con = duckdb.connect(database=':memory:')
 
-        # Load CSV 1: Pipeline Details
-        # read_csv_auto is used to handle the 53-column structure dynamically
+        # Task A1: Create roster_ops View (Virtual view for performance)
         self.con.execute("""
-        CREATE TABLE roster AS
+        CREATE VIEW roster_ops AS 
         SELECT * FROM read_csv_auto('data/roster_processing_details.csv')
         """)
 
-        # Load CSV 2: Market Aggregates
+        # Task A1: Create market_ops View
         self.con.execute("""
-        CREATE TABLE market AS
+        CREATE VIEW market_ops AS 
         SELECT * FROM read_csv_auto('data/aggregated_operational_metrics.csv')
         """)
+
+        # Keep existing Table 'roster' (so your existing 234 lines of code still work)
+        self.con.execute("CREATE TABLE roster AS SELECT * FROM roster_ops")
+
+        # Keep existing Table 'market'
+        self.con.execute("CREATE TABLE market AS SELECT * FROM market_ops")
 
     # -------------------------------------------------
     # BASIC DATA ACCESS
@@ -204,19 +210,34 @@ class MetricsEngine:
     # MEMORY HELPERS (NEW: Essential for Memory Architecture)
     # -------------------------------------------------
 
-    def get_stuck_ro_ids(self):
+    def get_stuck_snapshot(self):
         """
-        Provides a list of IDs for the episodic snapshot system.
+        Provides a detailed snapshot of currently stuck ROs (ID, Stage, Org).
+        Required for Task A4 Change Detection to compare against previous state.
         """
-        df = self.query("SELECT RO_ID FROM roster WHERE IS_STUCK = 1")
-        return df['RO_ID'].tolist()
+        # We include LATEST_STAGE_NM to detect 'Stage Movement' even if still stuck
+        df = self.query("""
+            SELECT RO_ID, LATEST_STAGE_NM, ORG_NM 
+            FROM roster 
+            WHERE IS_STUCK = 1
+        """)
+        return df.to_dict(orient='records')
 
     def get_market_metrics_snapshot(self):
         """
         Provides dictionary of current SCS_PERCENT for drift detection.
+        Aligned with Task A4 'KPI Drift' requirement.
         """
         df = self.query("SELECT MARKET, SCS_PERCENT FROM market")
+        # Returns: {'NY': 94.2, 'CA': 98.1, ...}
         return df.set_index('MARKET')['SCS_PERCENT'].to_dict()
+
+    def get_stuck_ro_ids(self):
+        """
+        Provides a simple list of IDs for quick set comparison in change_detector.py.
+        """
+        df = self.query("SELECT RO_ID FROM roster WHERE IS_STUCK = 1")
+        return df['RO_ID'].tolist()
 
     # -------------------------------------------------
     # VISUALIZATION DATA EXPORT
