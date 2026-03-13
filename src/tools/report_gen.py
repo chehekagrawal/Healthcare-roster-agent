@@ -1,5 +1,6 @@
-from src.db.duckdb_engine import MetricsEngine
 from datetime import datetime
+from src.db.duckdb_engine import MetricsEngine
+from src.tools.data_query import DataQueryTool
 
 class ReportGenerator:
     """
@@ -9,20 +10,24 @@ class ReportGenerator:
     """
     def __init__(self, metrics_engine: MetricsEngine):
         self.engine = metrics_engine
+        # Initialize the query tool to access 
+        self.query_tool = DataQueryTool(metrics_engine)
 
     def generate_pipeline_health_report(self):
         """
-        Gathers derived metrics and assembles a Markdown report.
+        Gathers derived metrics and assembles an advanced Markdown report.
         Strictly aligned with Task A3 requirements.
         """
-        # 1. Gather Data
-        health_df = self.engine.pipeline_health_score()
-        stuck_df = self.engine.stuck_ros()
+        # 1. Gather Data using the A2 Metric Engine
+        health_df = self.query_tool.derive_metrics("health")
+        stuck_df = self.query_tool.derive_metrics("stuck_duration")
         market_df = self.engine.market_pipeline_correlation()
+        anomalies_df = self.query_tool.detect_anomalies(threshold_multiplier=2.0)
         
         # 2. Calculate Aggregates
-        avg_health = health_df['pipeline_health_score'].mean()
+        avg_health = health_df['composite_health_score'].mean()
         total_stuck = len(stuck_df)
+        
         # Get unique state codes and sort them alphabetically
         critical_markets = sorted(market_df[market_df['SCS_PERCENT'] < 95.0]['CNT_STATE'].unique().tolist())
 
@@ -36,15 +41,15 @@ class ReportGenerator:
 - **Total Stuck Operations:** `{total_stuck}`
 - **Critical Markets (<95% Success):** {', '.join(critical_markets) if critical_markets else 'None'}
 
-## ⚠️ Active Bottlenecks (Top 5 Critical)
-The following Roster Operations (ROs) are currently flagged as `IS_STUCK` and require immediate attention:
+## ⚠️ Active Bottlenecks (Prioritized by Duration)
+The following ROs are currently stalled. 'Minutes Stuck' represents the time since the last successful stage update.
 
-| RO_ID | Organization | State | Current Stage | Failure Status |
-|-------|--------------|-------|---------------|----------------|
+| RO_ID | Organization | State | Current Stage | Minutes Stuck |
+|-------|--------------|-------|---------------|---------------|
 """
-        # Add Stuck RO rows
-        for _, row in stuck_df.head(5).iterrows():
-            report += f"| {row['RO_ID']} | {row['ORG_NM']} | {row['CNT_STATE']} | {row['LATEST_STAGE_NM']} | {row['FAILURE_STATUS']} |\n"
+        # Add Stuck RO rows with the new 'minutes_stuck' metric
+        for _, row in stuck_df.sort_values('minutes_stuck', ascending=False).head(5).iterrows():
+            report += f"| {row['RO_ID']} | {row['ORG_NM']} | {row['CNT_STATE']} | {row['LATEST_STAGE_NM']} | {int(row['minutes_stuck'])} |\n"
 
         report += """
 ## 📉 Market Correlation Analysis
@@ -54,14 +59,27 @@ Correlation between pipeline failures and overall market transaction success rat
 |-------|------------|-----------|------------------|
 """
         # Add Market Correlation rows
-        for _, row in market_df.head(5).iterrows():
+        for _, row in market_df.sort_values('SCS_PERCENT', ascending=True).head(5).iterrows():
             status_icon = "🔴" if row['SCS_PERCENT'] < 95.0 else "🟢"
             report += f"| {row['CNT_STATE']} | {row['failed_ros']} | {row['stuck_ros']} | {row['SCS_PERCENT']}% {status_icon} |\n"
 
+        report += """
+## 🔍 Duration Anomalies (Actual > 2x Average)
+ROs exhibiting significant deviation from historical processing times:
+
+| RO_ID | Stage | Deviation Ratio |
+|-------|-------|-----------------|
+"""
+        # Add Anomalies 
+        for _, row in anomalies_df.head(5).iterrows():
+            # Find which stage had the anomaly
+            ratio = max(row['dart_deviation'], row['dart_ui_deviation'] or 0, row['sps_deviation'] or 0)
+            report += f"| {row['RO_ID']} | Pipeline Stage | {ratio:.2f}x |\n"
+
         report += f"""
 ## 💡 Recommended Actions
-1. **Prioritize {total_stuck} Stuck ROs**: Focus on files in the `DART_REVIEW` stage as they represent manual bottlenecks.
-2. **Investigate {', '.join(critical_markets[:2])}**: These markets are falling below the 95% threshold; check for source-system specific rejections.
-3. **Audit Low Health Scores**: Review the {len(health_df[health_df['pipeline_health_score'] < 0.5])} files with a health score below 0.5.
+1. **Prioritize {total_stuck} Stuck ROs**: Immediate intervention required for files stuck longer than 24 hours.
+2. **Investigate {', '.join(critical_markets[:3])}**: These markets show critical KPI drift.
+3. **Optimize Anomalies**: Review the {len(anomalies_df)} files exceeding historical duration averages.
 """
         return report
