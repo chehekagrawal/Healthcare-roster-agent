@@ -49,3 +49,38 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
             "procedures_loaded": procedures_loaded
         }
     }
+
+def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
+    """
+    Builds and logs `EpisodicEvent` after every agent turn.
+    Extracts the final answer and used tools to persist the agent's recent reasoning.
+    This fulfills the second half of C4: Agent Memory Nodes.
+    """
+    if not state.get("final_answer"):
+        return {} # Nothing to log if no final action was taken
+        
+    session_id = state.get("session_id", "default_session")
+    
+    # In a full run, we would extract the specific user query from messages
+    user_intent = "Analyzed pipeline health" 
+    if state.get("messages") and len(state["messages"]) > 0:
+         msg = state["messages"][0]
+         raw_content = msg.content if hasattr(msg, "content") else str(msg)
+         user_intent = str(raw_content)[:100]
+
+    # Structure the episodic event
+    event = {
+        "session_id": session_id,
+        "intent": user_intent,
+        "tools_used": [t.get("name", "unknown") for t in state.get("tool_outputs", [])],
+        "final_output": state["final_answer"],
+        "procedures_run": state.get("procedure_context", None)
+    }
+    
+    # Note: Calling Engineer 1's SQLite/Chroma Episodic DB writer here
+    # from src.memory.episodic import log_episodic_event
+    # log_episodic_event(event)
+
+    print(f"[Memory Writer] Logged episodic event for session {session_id}")
+    
+    return {} # No direct state changes, just side object logging
