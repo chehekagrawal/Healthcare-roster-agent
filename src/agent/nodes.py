@@ -118,9 +118,9 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
             description="Must be 'pipeline_health_node' for system/file errors, or 'market_analytics_node' for SLA/Market/Trend questions."
         )
 
-    # Initialize the LLM (using gemini-1.5-flash for fast routing)
+    # Initialize the LLM (using gemini-2.0-flash for fast routing)
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
         structured_llm = llm.with_structured_output(RouterDecision)
         
         prompt = f"""
