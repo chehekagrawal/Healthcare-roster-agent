@@ -37,7 +37,7 @@ class PipelineMonitor:
         self.scheduler.shutdown()
         
     def _create_alert(self, title: str, severity: str, message: str):
-        """Helper to format and store an alert."""
+        """Helper to format, store, and distribute an alert."""
         alert = {
             "timestamp": time.time(),
             "title": title,
@@ -46,6 +46,30 @@ class PipelineMonitor:
         }
         self.active_alerts.append(alert)
         logger.warning(f"ALERT [{severity}]: {title} - {message}")
+        
+        # 1. Push to Streamlit session state if running in a UI context
+        try:
+            import streamlit as st
+            if "alerts" not in st.session_state:
+                st.session_state.alerts = []
+            st.session_state.alerts.append(alert)
+        except ImportError:
+            pass # Streamlit not installed or running, ignore
+        except Exception:
+            pass # Outside of Streamlit execution context, ignore
+            
+        # 2. Log to Episodic Memory
+        episodic_event = {
+            "session_id": "monitor_background_job",
+            "intent": "System generated alert",
+            "tools_used": ["proactive_monitor"],
+            "final_output": f"Alert Generated: {title} | Severity: {severity}",
+            "procedures_run": None
+        }
+        
+        # Note: Calling Engineer 1's SQLite/Chroma Episodic DB writer here
+        # from src.memory.episodic import log_episodic_event
+        # log_episodic_event(episodic_event)
 
     # ==========================================
     # CHUNK 1: Monitor Stuck ROs
