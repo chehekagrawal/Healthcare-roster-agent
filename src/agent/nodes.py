@@ -84,3 +84,55 @@ def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
     print(f"[Memory Writer] Logged episodic event for session {session_id}")
     
     return {} # No direct state changes, just side object logging
+
+def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
+    """
+    Acts as the intelligent router.
+    Reads the latest user message and the memory context, then decides
+    whether to route execution to the 'pipeline_health_node' or 'market_analytics_node'.
+    Fulfills C4: Agent Memory Nodes orchestration requirement.
+    """
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from pydantic import BaseModel, Field
+    except ImportError:
+        print("Required packages not installed for supervisor node.")
+        return {"active_agent": "pipeline_health_node"} # Fallback
+
+    if not state.get("messages"):
+        return {"active_agent": "pipeline_health_node"}
+
+    last_msg = state["messages"][-1]
+    query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+
+    # Define the structured output for the router
+    class RouterDecision(BaseModel):
+        next_agent: str = Field(
+            description="Must be 'pipeline_health_node' for system/file errors, or 'market_analytics_node' for SLA/Market/Trend questions."
+        )
+
+    # Initialize the LLM (using gemini-1.5-flash for fast routing)
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        structured_llm = llm.with_structured_output(RouterDecision)
+        
+        prompt = f"""
+        You are the Supervisor for RosterIQ. Route the user's query to the correct sub-agent.
+        
+        pipeline_health_node: Handles triage, file errors, bottlenecks, and stuck files.
+        market_analytics_node: Handles cross-market health, retry analysis, web searches, and SCS_PERCENT trends.
+        
+        User Query: {query}
+        """
+        
+        decision = structured_llm.invoke(prompt)
+        next_agent = decision.next_agent
+        if next_agent not in ["pipeline_health_node", "market_analytics_node"]:
+             next_agent = "pipeline_health_node" # Enforce strict routing
+             
+        print(f"[Supervisor] Routing query to: {next_agent}")
+        return {"active_agent": next_agent}
+
+    except Exception as e:
+        print(f"[Supervisor] Routing failed, defaulting to pipeline. Error: {e}")
+        return {"active_agent": "pipeline_health_node"}
