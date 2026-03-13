@@ -1,5 +1,6 @@
 # Security: API Keys and Secrets
 .env
+.env.example
 
 # Databases
 *.db
