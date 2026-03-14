@@ -137,7 +137,8 @@ def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
     if state.get("messages") and len(state["messages"]) > 0:
          msg = state["messages"][0]
          raw_content = msg.content if hasattr(msg, "content") else str(msg)
-         user_intent = str(raw_content)[:100]
+         raw_summary = str(raw_content)
+         user_intent = raw_summary[:100]
 
     # Structure the episodic event
     event = {

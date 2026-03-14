@@ -55,7 +55,8 @@ def test_scenario_1():
     print("\n--- Scenario 1: Pipeline Anomaly Check ---")
     app = build_roster_graph()
     output, _ = run_query(app, "What are the current stuck ROs and anomalies?", "session_s1")
-    print(f"  Output: {output[:150]}...")
+    out_summary = str(output)
+    print(f"  Output: {out_summary[:150]}...")
     passed = bool(output) and "Pipeline Engine" in output
     print(f"  {'✅ PASS' if passed else '❌ FAIL'}")
     return passed
@@ -67,7 +68,8 @@ def test_scenario_2():
     print("\n--- Scenario 2: Cross-Table Join & Root Cause ---")
     app = build_roster_graph()
     output, _ = run_query(app, "Why is the GA market failing? Trace the root cause.", "session_s2")
-    print(f"  Output: {output[:150]}...")
+    out_summary = str(output)
+    print(f"  Output: {out_summary[:150]}...")
     passed = "Market" in output or "Root Cause" in output or "Analysis" in output
     if passed:
         CROSS_JOIN_COUNT += 2  # Counts once per state queried
