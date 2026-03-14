@@ -32,16 +32,30 @@ try:
 except ImportError as e:
     print(f"Warning: Could not initialize reporting/query engines. Error: {e}")
 
-# --- Initialize LLM (Gemini 2.0 Flash) ---
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", 
-        google_api_key=os.getenv("GOOGLE_API_KEY")
-    )
-except Exception as e:
-    print(f"Warning: Could not initialize LLM. Error: {e}")
-    llm = None
+# --- Lazy LLM Getter (avoids caching None if key wasn't loaded at import time) ---
+_llm = None
+
+def get_llm():
+    """Returns the LLM, initializing it lazily so it always uses the current GOOGLE_API_KEY."""
+    global _llm
+    if _llm is None:
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                load_dotenv()
+                api_key = os.getenv("GOOGLE_API_KEY")
+            if api_key:
+                _llm = ChatGoogleGenerativeAI(
+                    model="gemini-2.0-flash",
+                    google_api_key=api_key
+                )
+                print("[LLM] Gemini 2.0 Flash initialized successfully.")
+            else:
+                print("Warning: GOOGLE_API_KEY not found in environment.")
+        except Exception as e:
+            print(f"Warning: Could not initialize LLM. Error: {e}")
+    return _llm
 
 # =============================================================================
 # ENGINEER 2 - MEMORY & ORCHESTRATION NODES
@@ -286,8 +300,8 @@ def pipeline_health_node(state: RosterIQState) -> Dict[str, Any]:
         else:
             raise ValueError("LLM not initialized correctly.")
     except Exception as e:
-        answer = f"Data retrieved manually: {data_context}" # Emergency Fallback
-        
+        answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM is unavailable (check GOOGLE_API_KEY). Error: {type(e).__name__}"
+
     return {
         "messages": [("system", answer)],
         "final_answer": answer
@@ -340,7 +354,8 @@ def market_analytics_node(state: RosterIQState) -> Dict[str, Any]:
         else:
             raise ValueError("LLM not initialized correctly.")
     except Exception as e:
-        answer = f"Analysis generated manually: {data_context}"
+        answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM is unavailable (check GOOGLE_API_KEY). Error: {type(e).__name__}"
+
         
     return {
         "messages": [("system", answer)],
