@@ -43,3 +43,7 @@ memory/chromadb/
 problemstatement.md
 
 src/agent/tempCodeRunnerFile.py
+roster_iq_threads.db-shm
+roster_iq_threads.db-wal
+
+chroma_db/*

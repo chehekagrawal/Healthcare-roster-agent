@@ -83,7 +83,8 @@ class ReportGenerator:
         headers = ["RO_ID", "Organization", "Stage", "Mins Stuck"]
         rows = []
         for _, row in stuck_df.sort_values('minutes_stuck', ascending=False).head(5).iterrows():
-            rows.append([str(row['RO_ID']), str(row['ORG_NM'])[:25], str(row['LATEST_STAGE_NM']), str(int(row['minutes_stuck']))])
+            org_name = str(row['ORG_NM'])
+            rows.append([str(row['RO_ID']), org_name[:25], str(row['LATEST_STAGE_NM']), str(int(row['minutes_stuck']))])
         
         self._draw_zebra_table(pdf, headers, rows, [25, 65, 60, 30])
         pdf.ln(10)

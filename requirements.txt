@@ -25,6 +25,15 @@ pandas>=2.2.1
 # ── Visualization ─────────────────────────────────────────────
 plotly>=5.19.0
 
+# ── Utilities & UI ──
+streamlit>=1.32.0
+apscheduler>=3.10.4
+python-dotenv>=1.0.1
+pydantic>=2.7.4
+fpdf2>=2.7.8
+
+
+# ── Web Search ───────────────────────────────────
 # ── Web Search ────────────────────────────────────────────────
 tavily-python>=0.3.3
 
