@@ -1,6 +1,7 @@
 import os
 import duckdb
 import pandas as pd
+import threading
 
 class MetricsEngine:
 
@@ -12,6 +13,7 @@ class MetricsEngine:
         """
         # Create in-memory DuckDB connection
         self.con = duckdb.connect(database=':memory:')
+        self.lock = threading.Lock()
 
         # Task A1.1: Calculate robust paths to the data folder
         # This ensures it works whether you run from root or from tests/
@@ -61,8 +63,17 @@ class MetricsEngine:
     def query(self, sql):
         """
         Generic query tool to execute raw SQL and return a dataframe.
+        Thread-safe wrapper using a lock and cursors.
         """
-        return self.con.execute(sql).df()
+        with self.lock:
+            try:
+                # Use a cursor for thread-isolated execution
+                return self.con.cursor().execute(sql).df()
+            except Exception as e:
+                # Fallback: log and re-raise or return empty if internal error
+                print(f"[DuckDB Analysis Error]: {e}")
+                # If the connection itself died, this will help surface it
+                raise e
 
     # -------------------------------------------------
     # DERIVED METRIC 1 — PIPELINE HEALTH SCORE

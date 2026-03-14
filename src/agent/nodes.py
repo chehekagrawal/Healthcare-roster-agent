@@ -48,7 +48,9 @@ def get_llm():
             if api_key:
                 _llm = ChatGoogleGenerativeAI(
                     model="gemini-2.0-flash",
-                    google_api_key=api_key
+                    google_api_key=api_key,
+                    max_retries=6,
+                    timeout=60
                 )
                 print("[LLM] Gemini 2.0 Flash initialized successfully.")
             else:
@@ -303,7 +305,10 @@ def pipeline_health_node(state: RosterIQState) -> Dict[str, Any]:
         else:
             raise ValueError("LLM not initialized correctly.")
     except Exception as e:
-        answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM is unavailable (check GOOGLE_API_KEY). Error: {type(e).__name__}"
+        if "429" in str(e) or "ResourceExhausted" in str(e):
+             answer = "⚠️ **Rate Limit Reached (429)**: The AI is a bit overwhelmed right now. Please wait about 10-15 seconds and try again. If this persists, upgrading the API key is recommended."
+        else:
+             answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM encountered an issue. Error: {type(e).__name__}: {str(e)[:200]}"
 
     return {
         "messages": [("system", answer)],
@@ -358,7 +363,10 @@ def market_analytics_node(state: RosterIQState) -> Dict[str, Any]:
         else:
             raise ValueError("LLM not initialized correctly.")
     except Exception as e:
-        answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM is unavailable (check GOOGLE_API_KEY). Error: {type(e).__name__}"
+        if "429" in str(e) or "ResourceExhausted" in str(e):
+             answer = "⚠️ **Rate Limit Reached (429)**: The AI is currently at its capacity. Please wait a few seconds before asking your next question. This is a common limit on the free tier."
+        else:
+             answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM had an error. Error: {type(e).__name__}: {str(e)[:200]}"
 
         
     return {

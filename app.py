@@ -21,8 +21,6 @@ import sqlite3
 # 🎨 EXTRAORDINARY UI CONFIGURATION
 # ==========================================
 st.set_page_config(page_title="RosterIQ | Intelligence Agent", page_icon="🧬", layout="wide")
-
-# Custom CSS — restored original working theme
 st.markdown("""
 <style>
 .main { background-color: #0E1117; }
@@ -128,7 +126,14 @@ with st.sidebar:
 
     available_sessions = get_all_sessions()
     if available_sessions:
-        selected_session = st.selectbox("Switch to past session", options=available_sessions)
+        # Include current session in options to prevent unwanted default reruns
+        all_opts = available_sessions.copy()
+        if st.session_state.session_id not in all_opts:
+            all_opts.insert(0, st.session_state.session_id)
+            
+        current_idx = all_opts.index(st.session_state.session_id)
+        selected_session = st.selectbox("Switch to past session", options=all_opts, index=current_idx)
+        
         if selected_session != st.session_state.session_id:
             st.session_state.session_id = selected_session
             st.session_state.messages = []
@@ -238,75 +243,10 @@ with st.sidebar:
     # Generate PDF when export button is clicked
     if st.button("📄 Export Pipeline Health Report"):
       try:
-
-        report = st.session_state.reporter.generate_pipeline_health_report()
-
-        # Remove characters not supported by latin-1
-        clean_report = report.encode("latin-1", "ignore").decode("latin-1")
-
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-
-        # Title
-        pdf.set_font("Arial", "B", 18)
-        pdf.cell(0, 12, "Provider Roster Pipeline Health Report", ln=True)
-        pdf.ln(4)
-
-        lines = clean_report.split("\n")
-
-        def _sanitize(text: str) -> str:
-            """Strip any character that can't be encoded in latin-1 (fpdf2 Arial font limit)."""
-            return text.encode("latin-1", "replace").decode("latin-1")
-
-        for line in lines:
-
-            # Remove common emojis and special symbols
-            for ch in ["📋","🚀","⚠️","📉","🔍","💡","✅","❌","→","←","≥","≤","★","•","►","▼","▲"]:
-                line = line.replace(ch, "")
-
-            # MAIN TITLE
-            if line.startswith("# "):
-                pdf.set_font("Arial", "B", 18)
-                pdf.cell(0, 10, line.replace("# ", ""), ln=True)
-                pdf.ln(3)
-
-            # SECTION HEADER
-            elif line.startswith("## "):
-                pdf.set_font("Arial", "B", 14)
-                pdf.cell(0, 8, line.replace("## ", ""), ln=True)
-                pdf.ln(2)
-
-            # Skip markdown table separator
-            elif line.startswith("|---"):
-                continue
-
-            # TABLE ROW
-            elif "|" in line:
-                columns = [c.strip() for c in line.split("|") if c.strip()]
-                if not columns:
-                    continue
-                col_width = 190 / len(columns)
-                pdf.set_x(pdf.l_margin)
-                pdf.set_font("Arial", "", 10)
-                for col in columns:
-                    pdf.cell(col_width, 8, _sanitize(col[:40]), border=1)
-                pdf.ln()
-                pdf.set_x(pdf.l_margin)  # Reset cursor after table row
-
-            # NORMAL TEXT
-            else:
-                pdf.set_x(pdf.l_margin)  # Always reset before multi_cell
-                pdf.set_font("Arial", "", 11)
-                if line.strip():
-                    pdf.multi_cell(0, 7, _sanitize(line))
-                else:
-                    pdf.ln(3)
-
-        # Store PDF in session state
-        # fpdf2 now returns bytearray directly from output(), no need to encode
-        st.session_state["pdf_report"] = bytes(pdf.output())
-        st.success("✅ Report ready! Click Download below.")
+        # Use the high-fidelity ReportGenerator for the clean corporate PDF report
+        pdf_bytes = st.session_state.reporter.generate_pdf_report()
+        st.session_state["pdf_report"] = pdf_bytes
+        st.success("✅ High-fidelity report ready! Click Download below.")
       except Exception as e:
         st.error(f"❌ PDF generation failed: {type(e).__name__}: {str(e)}")
 
@@ -336,11 +276,11 @@ def stream_data(text: str):
         time.sleep(0.02)
 
 # Display Chat History (FIXED: Simplified for proper Markdown rendering)
-for msg in st.session_state.messages:
+for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
         if "fig" in msg and msg["fig"]:
-            st.plotly_chart(msg["fig"], use_container_width=True)
+            st.plotly_chart(msg["fig"], use_container_width=True, key=f"hist_chart_{i}")
 
 # Chat Input Logic
 if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies..."):
@@ -389,7 +329,7 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
         # This renders the "typing" effect live
         st.write_stream(stream_data(content))
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key=f"live_chart_{len(st.session_state.messages)}")
 
     # 5. Save the Agent's message to the session state
     agent_message = {"role": "assistant", "content": content}
