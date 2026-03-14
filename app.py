@@ -12,6 +12,8 @@ from src.tools.visualizer import Visualizer
 from src.tools.report_gen import ReportGenerator
 from src.memory.episodic import log_interaction, get_history, save_data_snapshot, DB_NAME
 from src.memory.change_detector import ChangeDetector
+from src.agent.monitor import ProactiveMonitor, get_active_alerts
+from src.agent.graph import build_roster_graph
 import sqlite3
 
 # ==========================================
@@ -97,6 +99,13 @@ if 'engine' not in st.session_state:
     st.session_state.reporter = ReportGenerator(st.session_state.engine)
     st.session_state.detector = ChangeDetector(st.session_state.engine)
     st.session_state.messages = []
+    # --- Bonus: Start Proactive Monitoring ---
+    st.session_state.monitor = ProactiveMonitor(st.session_state.engine)
+    st.session_state.monitor.start()
+    st.session_state.monitor.run_immediate_scan()
+    
+    # --- Agent Graph Initialization ---
+    st.session_state.agent = build_roster_graph()
 
 # --- Session Thread Management ---
 def get_all_sessions():
@@ -148,12 +157,28 @@ with st.sidebar:
 
     st.divider()
     
-    # PROACTIVE MONITORING (Improved Professional UI)
-    st.subheader("🚨 Proactive Alerts")
+    # --- Bonus: Proactive Monitoring (Real-time Scanner) ---
+    st.subheader("🚨 Live Alerts (Autonomous)")
+    bg_alerts = get_active_alerts(limit=3)
+    if bg_alerts:
+        for alert in bg_alerts:
+            color = "#E53E3E" if alert['severity'] == "High" else "#DD6B20"
+            st.markdown(f"""
+            <div style="background:rgba(255,255,255,0.03); border-left:4px solid {color}; padding:10px; border-radius:8px; margin-bottom:10px;">
+                <p style="margin:0; font-weight:bold; font-size:0.85rem;">{alert['type']}</p>
+                <p style="margin:0; font-size:0.8rem; line-height:1.3;">{alert['message']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.caption("No critical anomalies detected. System Healthy.")
+
+    st.divider()
     
+    # 2. Comparison-based Anomalies (Partner A logic)
+    st.subheader("📊 Operational Diff")
     change_data = st.session_state.detector.detect_all_changes()
     
-    # 1. Handle New Anomalies
+    # Handle New Anomalies
     if change_data["new_anomalies"]:
         for ro_id in change_data["new_anomalies"]:
             st.markdown(f"""
@@ -209,63 +234,11 @@ with st.sidebar:
     
     # Generate PDF when export button is clicked
     if st.button("📄 Export Pipeline Health Report"):
-
-        report = st.session_state.reporter.generate_pipeline_health_report()
-
-        # Remove characters not supported by latin-1
-        clean_report = report.encode("latin-1", "ignore").decode("latin-1")
-
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-
-        # Title
-        pdf.set_font("Arial", "B", 18)
-        pdf.cell(0, 12, "Provider Roster Pipeline Health Report", ln=True)
-        pdf.ln(4)
-
-        lines = clean_report.split("\n")
-
-        for line in lines:
-
-            # Remove emojis
-            line = line.replace("📋","").replace("🚀","").replace("⚠️","").replace("📉","").replace("🔍","").replace("💡","")
-
-            # MAIN TITLE
-            if line.startswith("# "):
-                pdf.set_font("Arial", "B", 18)
-                pdf.cell(0, 10, line.replace("# ", ""), ln=True)
-                pdf.ln(3)
-
-            # SECTION HEADER
-            elif line.startswith("## "):
-                pdf.set_font("Arial", "B", 14)
-                pdf.cell(0, 8, line.replace("## ", ""), ln=True)
-                pdf.ln(2)
-
-            # Skip markdown table separator
-            elif line.startswith("|---"):
-                continue
-
-            # TABLE ROW
-            elif "|" in line:
-                columns = [c.strip() for c in line.split("|") if c.strip()]
-                col_width = 190 / len(columns)
-
-                pdf.set_font("Arial", "", 10)
-
-                for col in columns:
-                    pdf.cell(col_width, 8, col, border=1)
-
-                pdf.ln()
-
-            # NORMAL TEXT
-            else:
-                pdf.set_font("Arial", "", 11)
-                pdf.multi_cell(0, 7, line)
-
-        # Store PDF in session state
-        st.session_state["pdf_report"] = pdf.output(dest="S").encode("latin-1")
+        with st.spinner("Generating Diagnostic Report..."):
+            # Call the high-fidelity PDF backend
+            pdf_data = st.session_state.reporter.generate_pdf_report()
+            st.session_state["pdf_report"] = pdf_data
+            st.success("Report Generated! Click download below.")
 
 
     # Show download button only once
@@ -300,49 +273,36 @@ for msg in st.session_state.messages:
 
 # Chat Input Logic
 if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies..."):
-    # 1. Add and display the User's message
+    # 1. Add and display the User's message IMMEDIATELY
     st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
     
-    # 2. Process with the Logic Router (Correctly starting with 'if')
-    fig = None # Initialize fig
+    # 2. Process with the Intelligent Agent Graph
+    fig = None 
     
-    if "root cause" in prompt.lower() or "why" in prompt.lower():
-        from src.tools.root_cause import RootCauseTracer
-        tracer = RootCauseTracer(st.session_state.engine)
-        analysis = tracer.trace_market_failure("GA")
-        
-        # "EXTRAORDINARY" UI Formatting for the narrative
-        content = f"""
-**🔍 Root Cause Analysis — GA Market**
-
-{analysis['narrative']}
-
----
-
-**Key Diagnostic Findings**
-
-• **Primary Bottleneck:** `{analysis['primary_failure_stage']}`  
-• **Culprit Source System:** `{analysis['primary_culprit_system']}`  
-• **Top Failing Organization:** `{analysis['top_failing_orgs'][0]['ORG_NM'] if analysis['top_failing_orgs'] else 'N/A'}`
-"""
-
-    elif "trend" in prompt.lower() or "market" in prompt.lower():
+    # Special shortcuts for visualizations (stay for UX speed)
+    if "trend" in prompt.lower() or "market" in prompt.lower():
         content = "Analyzing Market SCS_PERCENT trends..."
         fig = st.session_state.viz.plot_market_trend("GA") 
-
     elif "stuck" in prompt.lower() or "triage" in prompt.lower():
         content = "Triaging active bottlenecks..."
         fig = st.session_state.viz.plot_stuck_ro_tracker()
-
     elif "anomaly" in prompt.lower() or "slow" in prompt.lower():
         content = "Analyzing duration deviations..."
         fig = st.session_state.viz.plot_duration_anomaly()
-        
     elif "report" in prompt.lower():
         content = st.session_state.reporter.generate_pipeline_health_report()
-
     else:
-        content = "I've analyzed the pipeline. Please specify if you want a 'health report', or to investigate 'stuck ro', 'GA market trends', or 'why' a market is failing."
+        # FULL AGENT GRAPH INVOCATION
+        with st.spinner("Agent Reasoning..."):
+            inputs = {
+                "messages": [("user", prompt)],
+                "session_id": st.session_state.session_id
+            }
+            config = {"configurable": {"thread_id": st.session_state.session_id}}
+            result = st.session_state.agent.invoke(inputs, config)
+            content = result.get("final_answer", "I encountered an error processing your request.")
 
     # 3. Log the interaction to Episodic Memory
     log_interaction(st.session_state.session_id, prompt, content)
@@ -360,8 +320,8 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
         agent_message["fig"] = fig
     st.session_state.messages.append(agent_message)
 
-    # 5. RERUN THE SCRIPT to display the new messages
-    # st.rerun()
+    # 5. RERUN THE SCRIPT to ensure UI state consistency
+    st.rerun()
 
 # --- Everything below this is outside the 'if prompt' block ---
 

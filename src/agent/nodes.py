@@ -6,6 +6,14 @@ Contains both Engineer 1's Data Integration Nodes and Engineer 2's Memory Orches
 """
 from typing import Dict, Any
 from src.agent.state import RosterIQState
+from dotenv import load_dotenv
+import os
+
+# Load environment variables (especially GOOGLE_API_KEY)
+load_dotenv() 
+if not os.getenv("GOOGLE_API_KEY"):
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+    load_dotenv(dotenv_path=env_path)
 
 # -----------------------------------------------------------------------------
 # Engineer 1 (Partner) - Data & Analytics Initialization
@@ -23,6 +31,17 @@ try:
     report_gen = ReportGenerator(engine)
 except ImportError as e:
     print(f"Warning: Could not initialize reporting/query engines. Error: {e}")
+
+# --- Initialize LLM (Gemini 2.0 Flash) ---
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash", 
+        google_api_key=os.getenv("GOOGLE_API_KEY")
+    )
+except Exception as e:
+    print(f"Warning: Could not initialize LLM. Error: {e}")
+    llm = None
 
 # =============================================================================
 # ENGINEER 2 - MEMORY & ORCHESTRATION NODES
@@ -84,12 +103,21 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
     except Exception:
         procedures_loaded = []
         
+    # 5. FETCH PROACTIVE ALERTS (Bonus Challenge)
+    try:
+        from src.agent.monitor import get_active_alerts
+        active_alerts = get_active_alerts(limit=3)
+        alert_summary = [f"[{a['severity']}] {a['message']}" for a in active_alerts]
+    except Exception:
+        alert_summary = []
+        
     return {
         "memory_context": {
             "episodic": episodic_events,
             "semantic": semantic_hits,
             "change_summary": change_summary,
-            "procedures_loaded": procedures_loaded
+            "procedures_loaded": procedures_loaded,
+            "active_alerts": alert_summary
         }
     }
 
@@ -172,11 +200,7 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
 
     # Initialize the LLM
     try:
-        import os
         from langchain_core.messages import HumanMessage
-        api_key = os.getenv("GOOGLE_API_KEY")
-        # Use simple initialization
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=api_key)
         
         prompt = f"""
         Analyze the user query and decide which agent should handle it.
@@ -189,9 +213,11 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
         User Query: {query}
         """
         
-        # Invoke with a HumanMessage object, which is cleaner
-        response = llm.invoke([HumanMessage(content=prompt)])
-        text = response.content.lower().strip()
+        if llm:
+            response = llm.invoke([HumanMessage(content=prompt)])
+            text = response.content.lower().strip()
+        else:
+            raise ValueError("LLM not initialized.")
         
         if "market_analytics_node" in text:
             next_agent = "market_analytics_node"
@@ -216,70 +242,106 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
 # ENGINEER 1 - DATA ANALYTICS & REPORTING NODES
 # =============================================================================
 
-def pipeline_health_node(state):
+def pipeline_health_node(state: RosterIQState) -> Dict[str, Any]:
     """
     Pipeline Health Agent Node.
     Analyzes stuck files, health scores, and duration anomalies.
+    Summarizes findings using LLM for a natural language experience.
     """
-    query = state["messages"][-1].content.lower()
+    query = state["messages"][-1].content
+    memory = state.get("memory_context", {})
     
-    # Logic to decide which of your A2 tools to call
-    if "stuck" in query:
+    # 1. Retrieve Data Context
+    if "stuck" in query.lower():
         data = query_tool.derive_metrics("stuck_duration")
-        context = f"Current stuck files and their durations: {data.to_json()}"
-    elif "anomaly" in query or "slow" in query:
+        data_context = f"Current stuck files: {data.to_json()}"
+    elif "anomaly" in query.lower() or "slow" in query.lower():
         data = query_tool.detect_anomalies()
-        context = f"Duration anomalies detected: {data.to_json()}"
+        data_context = f"Duration anomalies: {data.to_json()}"
     else:
         data = query_tool.derive_metrics("health")
-        context = f"Overall pipeline health scores: {data.to_json()}"
+        data_context = f"Pipeline health scores: {data.to_json()}"
     
-    answer = f"Data retrieved from Pipeline Engine: {context}"
+    # 2. Construct LLM Summary Prompt
+    prompt = f"""
+    Internal Data Engine Result: {data_context}
+    
+    Memory Context:
+    - Procedural Memory (Rules): {memory.get('procedures_loaded', [])}
+    - Semantic Knowledge: {memory.get('semantic', [])}
+    - Active Alerts: {memory.get('active_alerts', [])}
+    
+    User Query: {query}
+    
+    Instruction: Provide a professional natural language summary of the data. 
+    Explain what's happening. DO NOT return raw JSON. 
+    If referencing rules or alerts from memory, explain their relevance.
+    """
+    
+    try:
+        from langchain_core.messages import HumanMessage
+        if llm:
+            response = llm.invoke([HumanMessage(content=prompt)])
+            answer = response.content
+        else:
+            raise ValueError("LLM not initialized correctly.")
+    except Exception as e:
+        answer = f"Data retrieved manually: {data_context}" # Emergency Fallback
+        
     return {
         "messages": [("system", answer)],
         "final_answer": answer
     }
 
-def market_analytics_node(state):
+def market_analytics_node(state: RosterIQState) -> Dict[str, Any]:
     """
     Market Analytics Agent Node.
-    Handles cross-table joins and root cause tracing.
+    Handles cross-table joins, root cause tracing, and web searches.
+    Summarizes complex analytics for the user.
     """
-    query = state["messages"][-1].content.upper()
+    query = state["messages"][-1].content
+    memory = state.get("memory_context", {})
     
-    # Extract state code (simple logic for the demo)
-    # In a real run, the LLM provides the state code to this node.
     states = ["GA", "NY", "TX", "CA", "FL", "NH"]
-    target_state = next((s for s in states if s in query), "NATIONAL")
+    target_state = next((s for s in states if s in query.upper()), "NATIONAL")
 
+    # 1. Retrieve Analysis Context
     if "root cause" in query.lower() or "why" in query.lower():
-        # Call your Extraordinary Root Cause Tool (Bonus Task)
         analysis = tracer.trace_market_failure(target_state)
-        context = f"Root Cause Narrative: {analysis['narrative']}"
-    elif "search" in query.lower() or "what is" in query.lower() or "definition" in query.lower():
-        # C3: Web Search Tool execution
+        data_context = f"Root Cause Analysis for {target_state}: {analysis['narrative']}"
+    elif "search" in query.lower() or "what is" in query.lower() or "explanation" in query.lower():
         from src.tools.web_search import web_search
-        
-        # Decide context template based on keywords
-        template = "general"
-        if "validation" in query.lower() or "availity" in query.lower():
-            template = "complete_validation_failure"
-        elif "medicaid" in query.lower() or "cms" in query.lower() or "rule" in query.lower():
-            template = "cms_rule_changes"
-            
-        results = web_search.search(query, context_type=template)
-        
-        # Try to enrich the Semantic KB immediately with these findings
-        enriched = web_search.enrich_semantic_kb(results)
-        enrich_status = "(These findings were saved to the Semantic KB for future reasoning)" if enriched else ""
-        
-        context = f"Web Search Results for '{query}' [{template}]:\n{results}\n{enrich_status}"
+        results = web_search.search(query)
+        data_context = f"Web Research Findings: {results}"
     else:
-        # Call your Cross-Table Join tool
         data = query_tool.cross_table_join(target_state)
-        context = f"Market Correlation Data for {target_state}: {data.to_json()}"
+        data_context = f"Market Correlation Data for {target_state}: {data.to_json()}"
 
-    answer = f"Analysis from Market Engine: {context}"
+    # 2. Summarize with Knowledge Base Context
+    prompt = f"""
+    Analytical Findings: {data_context}
+    
+    Procedural Knowledge (Workflows): {memory.get('procedures_loaded', [])}
+    Knowledge Base (Semantic): {memory.get('semantic', [])}
+    Active Anomalies: {memory.get('active_alerts', [])}
+    
+    User Query: {query}
+    
+    Instruction: Answer the user's query professionally. If they are asking for an EXPLANATION 
+    of a stage (like DART) or a rule, use the Procedural Knowledge provided. 
+    Summarize any data findings naturally. DO NOT show raw JSON.
+    """
+    
+    try:
+        from langchain_core.messages import HumanMessage
+        if llm:
+            response = llm.invoke([HumanMessage(content=prompt)])
+            answer = response.content
+        else:
+            raise ValueError("LLM not initialized correctly.")
+    except Exception as e:
+        answer = f"Analysis generated manually: {data_context}"
+        
     return {
         "messages": [("system", answer)],
         "final_answer": answer
