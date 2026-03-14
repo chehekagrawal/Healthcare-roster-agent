@@ -41,3 +41,5 @@ Thumbs.db
 # data/*.csv
 memory/chromadb/
 problemstatement.md
+
+src/agent/tempCodeRunnerFile.py
