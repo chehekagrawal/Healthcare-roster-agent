@@ -122,7 +122,8 @@ def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
     
     # Note: Calling Engineer 1's SQLite/Chroma Episodic DB writer here
     try:
-        from src.memory.episodic import log_episodic_event
+        from src.memory.episodic import log_episodic_event, log_interaction
+        # 1. Log the structured diagnostic event
         log_episodic_event(
             session_id=session_id,
             intent=user_intent,
@@ -130,8 +131,14 @@ def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
             kpis={"tools": event["tools_used"], "procedures": event["procedures_run"]},
             severity="Low"
         )
+        # 2. Log the general conversation interaction (for chat history retrieval)
+        log_interaction(
+            session_id=session_id,
+            user_query=user_intent,
+            agent_response=state["final_answer"]
+        )
     except Exception as e:
-        print(f"Warning: Could not log episodic event: {e}")
+        print(f"Warning: Could not log persistence events: {e}")
 
     print(f"[Memory Writer] Logged episodic event for session {session_id}")
     
@@ -163,31 +170,46 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
             description="Must be 'pipeline_health_node' for system/file errors, or 'market_analytics_node' for SLA/Market/Trend questions."
         )
 
-    # Initialize the LLM (using gemini-2.0-flash for fast routing)
+    # Initialize the LLM
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
-        structured_llm = llm.with_structured_output(RouterDecision)
+        import os
+        from langchain_core.messages import HumanMessage
+        api_key = os.getenv("GOOGLE_API_KEY")
+        # Use simple initialization
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=api_key)
         
         prompt = f"""
-        You are the Supervisor for RosterIQ. Route the user's query to the correct sub-agent.
+        Analyze the user query and decide which agent should handle it.
+        Return ONLY one of these two strings: 'pipeline_health_node' or 'market_analytics_node'.
         
-        pipeline_health_node: Handles triage, file errors, bottlenecks, and stuck files.
-        market_analytics_node: Handles cross-market health, retry analysis, web searches, and SCS_PERCENT trends.
+        Rules:
+        - Use 'pipeline_health_node' for queries about stuck files, pipeline stages, file errors, or ingestion.
+        - Use 'market_analytics_node' for queries about market trends, SCS_PERCENT, root cause analysis, or web searches.
         
         User Query: {query}
         """
         
-        decision = structured_llm.invoke(prompt)
-        next_agent = decision.next_agent
-        if next_agent not in ["pipeline_health_node", "market_analytics_node"]:
-             next_agent = "pipeline_health_node" # Enforce strict routing
+        # Invoke with a HumanMessage object, which is cleaner
+        response = llm.invoke([HumanMessage(content=prompt)])
+        text = response.content.lower().strip()
+        
+        if "market_analytics_node" in text:
+            next_agent = "market_analytics_node"
+        else:
+            next_agent = "pipeline_health_node"
              
         print(f"[Supervisor] Routing query to: {next_agent}")
         return {"active_agent": next_agent}
 
     except Exception as e:
-        print(f"[Supervisor] Routing failed, defaulting to pipeline. Error: {e}")
-        return {"active_agent": "pipeline_health_node"}
+        print(f"[Supervisor] Routing failed, using keyword fallback. Error: {e}")
+        # Keyword fallback
+        market_keywords = ["market", "scs", "trend", "search", "root cause", "ga", "ca", "ny", "tx"]
+        if any(kw in query.lower() for kw in market_keywords):
+            next_agent = "market_analytics_node"
+        else:
+            next_agent = "pipeline_health_node"
+        return {"active_agent": next_agent}
 
 
 # =============================================================================
@@ -212,7 +234,11 @@ def pipeline_health_node(state):
         data = query_tool.derive_metrics("health")
         context = f"Overall pipeline health scores: {data.to_json()}"
     
-    return {"messages": [("system", f"Data retrieved from Pipeline Engine: {context}")]}
+    answer = f"Data retrieved from Pipeline Engine: {context}"
+    return {
+        "messages": [("system", answer)],
+        "final_answer": answer
+    }
 
 def market_analytics_node(state):
     """
@@ -253,7 +279,11 @@ def market_analytics_node(state):
         data = query_tool.cross_table_join(target_state)
         context = f"Market Correlation Data for {target_state}: {data.to_json()}"
 
-    return {"messages": [("system", f"Analysis from Market Engine: {context}")]}
+    answer = f"Analysis from Market Engine: {context}"
+    return {
+        "messages": [("system", answer)],
+        "final_answer": answer
+    }
 
 def report_node(state):
     """
@@ -261,4 +291,8 @@ def report_node(state):
     Triggers the Markdown report generator.
     """
     report = report_gen.generate_pipeline_health_report()
-    return {"messages": [("system", f"Generated Operational Report:\n{report}")]}
+    answer = f"Generated Operational Report:\n{report}"
+    return {
+        "messages": [("system", answer)],
+        "final_answer": answer
+    }
