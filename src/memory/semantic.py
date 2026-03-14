@@ -13,14 +13,42 @@ Usage:
 from __future__ import annotations
 
 import os
+import hashlib
+import numpy as np
 from typing import List, Dict, Any
 
 import chromadb
 from chromadb.config import Settings
+from chromadb import EmbeddingFunction, Documents, Embeddings
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 CHROMADB_PATH = os.getenv("CHROMADB_PATH", "memory/chromadb")
 COLLECTION_NAME = "semantic_knowledge"
+
+# ── Lightweight Hash Embedding (no model download needed) ─────────────────────
+class SimpleHashEmbeddingFunction(EmbeddingFunction):
+    """
+    A deterministic, fast embedding function using hashing.
+    Avoids the large ONNX model download while staying fully compatible with ChromaDB.
+    Not as accurate as neural embeddings but sufficient for keyword-level semantic retrieval.
+    """
+    DIM = 256
+
+    def __call__(self, input: Documents) -> Embeddings:
+        embeddings = []
+        for text in input:
+            vec = np.zeros(self.DIM, dtype=np.float32)
+            words = str(text).lower().split()
+            for word in words:
+                idx = int(hashlib.md5(word.encode()).hexdigest(), 16) % self.DIM
+                vec[idx] += 1.0
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec /= norm
+            embeddings.append(vec.tolist())
+        return embeddings
+
+_EMBED_FN = SimpleHashEmbeddingFunction()
 
 # ── Knowledge Base ─────────────────────────────────────────────────────────────
 # Each entry: {"id": unique str, "text": the knowledge item, "metadata": dict}
@@ -498,6 +526,7 @@ class SemanticMemory:
         )
         self._collection = self._client.get_or_create_collection(
             name=collection,
+            embedding_function=_EMBED_FN,
             metadata={"hnsw:space": "cosine"},
         )
         self._seed_if_empty()
