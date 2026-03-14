@@ -43,41 +43,6 @@
 
 > **The core innovation:** Three-layer persistent memory (episodic, procedural, semantic) that makes the agent smarter with every interaction.
 
-### High-Level System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         RosterIQ System                             │
-│                                                                     │
-│  ┌──────────────┐    ┌─────────────────────────────────────────┐   │
-│  │   Streamlit  │    │           LangGraph Agent Engine         │   │
-│  │   Frontend   │◄──►│                                         │   │
-│  │              │    │  ┌──────────┐  ┌──────────┐  ┌──────┐  │   │
-│  │  • Chat UI   │    │  │ Memory   │  │Supervisor│  │Memory│  │   │
-│  │  • Charts    │    │  │ Loader   │─►│   Node   │  │Writer│  │   │
-│  │  • Sidebar   │    │  └──────────┘  └────┬─────┘  └──────┘  │   │
-│  │  • Alerts    │    │                     │                   │   │
-│  └──────────────┘    │           ┌─────────┴──────────┐        │   │
-│                      │           ▼                    ▼        │   │
-│  ┌──────────────┐    │  ┌────────────────┐  ┌──────────────┐  │   │
-│  │  Data Layer  │    │  │Pipeline Health │  │Market        │  │   │
-│  │              │    │  │Agent Node      │  │Analytics     │  │   │
-│  │  DuckDB      │◄───│  │                │  │Agent Node    │  │   │
-│  │  CSV 1 + 2   │    │  └────────────────┘  └──────────────┘  │   │
-│  └──────────────┘    └─────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─────────────────────────── Memory Layer ────────────────────┐   │
-│  │  Episodic (SQLite)  │  Procedural (ChromaDB)  │ Semantic    │   │
-│  │  Session logs       │  Diagnostic workflows    │ (ChromaDB)  │   │
-│  │  Change detection   │  4 named procedures      │ Domain KB   │   │
-│  └────────────────────────────────────────────────────────────┘   │
-│                                                                     │
-│  ┌─────────────────────── Tool Layer ──────────────────────────┐   │
-│  │  DataQueryTool │ Visualizer │ ReportGenerator │ WebSearch   │   │
-│  └─────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
 ---
 
 ## Features
@@ -93,18 +58,6 @@
 | 🤖 **Multi-Agent** | Supervisor dynamically routes to Pipeline Agent or Market Analytics Agent |
 | 🔗 **Root Cause Chaining** | Traces low SCS_PERCENT → orgs → source systems → pipeline stages |
 | 📈 **Cross-CSV Analysis** | Links file-level health (CSV1) to market success rates (CSV2) |
-
-### Technical Stack
-
-| Component | Technology | Justification |
-|---|---|---|
-| **Agent Framework** | LangGraph 0.2+ | Stateful graph execution, native checkpointing |
-| **LLM** | Gemini 2.0 Flash | Free tier, fast, large context window |
-| **Frontend** | Streamlit 1.32+ | Rapid prototyping, native chart rendering |
-| **Data Engine** | DuckDB | In-process SQL analytics, sub-second queries |
-| **Memory Stores** | SQLite + ChromaDB | Persistent session logs + Semantic domain KB |
-| **Web Search** | Tavily API | Healthcare-aware results, structured output |
-| **Visualization** | Plotly | Interactive, context-rich visualizations |
 
 ### Key Features Spotlight
 
@@ -141,54 +94,26 @@ _**Visual Diagnostics**: Inline Plotly visualizations allow for deep-dive analys
 
 ## Architecture
 
-### Agent Graph
+## Architecture
 
 ```mermaid
 graph TD
-    START([User Query]) --> ML[Memory Loader Node]
-    ML -->|Injects episodic + semantic + procedural context| SUP[Supervisor Node]
-    SUP -->|"Intent: pipeline/stuck/health"| PHA[Pipeline Health Agent]
-    SUP -->|"Intent: market/root cause/SCS"| MAA[Market Analytics Agent]
-    PHA -->|Queries DuckDB for stuck ROs, anomalies| MW[Memory Writer Node]
-    MAA -->|Queries DuckDB for market KPIs, web search| MW
-    MW -->|Logs to episodic store| END([Response to User])
+    User([User Query]) --> ML[Memory Loader]
+    ML --> SL[Supervisor Layer]
+    SL -- Intent: Files/Stages --> PA[Pipeline Health Agent]
+    SL -- Intent: Market/SLA --> MA[Market Analytics Agent]
     
-    style ML fill:#1a1a2e,color:#00CFFF,stroke:#00CFFF
-    style SUP fill:#1a1a2e,color:#7B2FFF,stroke:#7B2FFF
-    style PHA fill:#1a1a2e,color:#FF9A3C,stroke:#FF9A3C
-    style MAA fill:#1a1a2e,color:#FF9A3C,stroke:#FF9A3C
-    style MW fill:#1a1a2e,color:#00FFB3,stroke:#00FFB3
+    subgraph Memory Layers
+        ML --> EP[(Episodic Memory)]
+        ML --> PR[(Procedural Memory)]
+        ML --> SM[(Semantic Knowledge)]
+    end
+    
+    PA --> MW[Memory Writer]
+    MA --> MW
+    MW --> Out([Final Response])
 ```
 _High-level architecture showing the LangGraph multi-agent flow and memory-driven reasoning path._
-
-### Data Flow Diagram
-
-```
-roster_processing_details.csv (CSV 1)           aggregated_operational_metrics.csv (CSV 2)
-         │                                                      │
-         └──────────────┐                        ┌─────────────┘
-                        ▼                        ▼
-                   ┌─────────────────────────────────┐
-                   │        DuckDB Engine             │
-                   │                                  │
-                   │  ┌──────────────────────────┐   │
-                   │  │ MetricsEngine queries:    │   │
-                   │  │ • stuck_ros()             │   │
-                   │  │ • pipeline_health_score() │   │
-                   │  │ • detect_anomalies()      │   │
-                   │  │ • cross_table_join(state) │   │
-                   │  │ • get_market_kpi()        │   │
-                   │  └──────────────────────────┘   │
-                   └──────────────┬──────────────────┘
-                                  │
-                    ┌─────────────┼──────────────┐
-                    ▼             ▼              ▼
-              DataQueryTool  Visualizer    ReportGenerator
-                    │             │              │
-                    ▼             ▼              ▼
-              Structured     Plotly Charts   Markdown PDF
-              JSON Results   (5 types)       Report
-```
 
 
 ### Agent Graph Flow
@@ -212,29 +137,6 @@ Health Agent        Agent
              │
              ▼
         Response to User
-```
-
----
-
-## Tool Architecture
-
-```
-                      User Query
-                          │
-                          ▼
-               ┌─────────────────────┐
-               │   Tool Dispatcher   │
-               └──────┬──────────────┘
-        ┌─────────────┼──────────────────────┐
-        ▼             ▼              ▼        ▼
-  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-  │DataQuery │ │Visualizer│ │WebSearch │ │ Report   │
-  │  Tool    │ │  Tool    │ │  Tool    │ │Generator │
-  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
-       │            │            │             │
-       ▼            ▼            ▼             ▼
-    DuckDB       Plotly        Tavily       Markdown
-    (CSV 1+2)    Charts        API          + fpdf2
 ```
 
 ---
