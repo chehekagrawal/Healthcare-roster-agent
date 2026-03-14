@@ -1,8 +1,9 @@
-<div align="center">
+
 
 # 🧬 RosterIQ
 ### Memory-Driven Provider Roster Intelligence Agent
 
+<div align="center">
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://python.org)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-purple?logo=langchain)](https://langchain-ai.github.io/langgraph/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.32+-red?logo=streamlit)](https://streamlit.io)
@@ -10,6 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 *Autonomous AI agent for healthcare provider roster pipeline monitoring, anomaly detection, and cross-market analysis — with persistent, layered memory.*
+
 
 **[Demo Video](https://youtu.be/ulLDvaItvpg)**
 
