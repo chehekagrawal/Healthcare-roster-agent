@@ -4,7 +4,7 @@ from src.tools.data_query import DataQueryTool
 
 class ReportGenerator:
     """
-    Task A3: Operational Report Generator.
+    Operational Report Generator.
     Produces structured Markdown reports summarizing pipeline health, 
     bottlenecks, and market-level impacts.
     """
@@ -73,7 +73,11 @@ ROs exhibiting significant deviation from historical processing times:
         # Add Anomalies 
         for _, row in anomalies_df.head(5).iterrows():
             # Find which stage had the anomaly
-            ratio = max(row['dart_deviation'], row['dart_ui_deviation'] or 0, row['sps_deviation'] or 0)
+            ratio = max(
+    row.get('dart_deviation', 0) or 0,
+    row.get('dart_ui_deviation', 0) or 0,
+    row.get('sps_deviation', 0) or 0
+)
             report += f"| {row['RO_ID']} | Pipeline Stage | {ratio:.2f}x |\n"
 
         report += f"""
