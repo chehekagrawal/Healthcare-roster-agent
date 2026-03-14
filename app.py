@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
+from fpdf import FPDF
 
 # Import your Tier 1/2/3 Backend
 from src.db.duckdb_engine import MetricsEngine
@@ -69,6 +70,10 @@ div[data-testid="stChatMessageAssistant"]
 
 [data-testid="stChatMessageContent"] p {
     font-size: 0.9rem;
+}
+            
+[data-testid="stMarkdownContainer"] p {
+    line-height: 1.6;
 }
 
 .stMetric { 
@@ -162,9 +167,42 @@ with st.sidebar:
     st.divider()
     
     if st.button("📄 Export Pipeline Health Report"):
+
         report = st.session_state.reporter.generate_pipeline_health_report()
-        st.session_state.messages.append({"role": "assistant", "content": report})
-        st.rerun()
+
+        # Remove characters not supported by latin-1 (like emojis)
+        clean_report = report.encode("latin-1", "ignore").decode("latin-1")
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+
+        for line in clean_report.split("\n"):
+
+            if line.startswith("# "):
+                pdf.set_font("Arial", "B", 16)
+                pdf.cell(0, 10, line.replace("# ", ""), ln=True)
+
+            elif line.startswith("## "):
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(0, 9, line.replace("## ", ""), ln=True)
+
+            elif "**" in line:
+                pdf.set_font("Arial", "B", 12)
+                pdf.cell(0, 8, line.replace("**", ""), ln=True)
+
+            else:
+                pdf.set_font("Arial", "", 11)
+                pdf.cell(0, 7, line, ln=True)
+
+        pdf_output = pdf.output(dest="S").encode("latin-1")
+
+        st.download_button(
+            label="⬇ Download PDF Report",
+            data=pdf_output,
+            file_name="pipeline_health_report.pdf",
+            mime="application/pdf"
+    )
 
 # ==========================================
 # 💬 MAIN INTERFACE: INTELLIGENT CHAT
