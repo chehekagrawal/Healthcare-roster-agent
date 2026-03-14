@@ -4,10 +4,11 @@ import plotly.graph_objects as go
 from datetime import datetime
 from fpdf import FPDF
 import time
+from dotenv import load_dotenv
+load_dotenv()  # Load .env FIRST before any src imports that need API keys
 
 # Import your Tier 1/2/3 Backend
 from src.db.duckdb_engine import MetricsEngine
-from src.tools.data_query import DataQueryTool
 from src.tools.visualizer import Visualizer
 from src.tools.report_gen import ReportGenerator
 from src.memory.episodic import log_interaction, get_history, save_data_snapshot, DB_NAME
@@ -234,11 +235,68 @@ with st.sidebar:
     
     # Generate PDF when export button is clicked
     if st.button("📄 Export Pipeline Health Report"):
-        with st.spinner("Generating Diagnostic Report..."):
-            # Call the high-fidelity PDF backend
-            pdf_data = st.session_state.reporter.generate_pdf_report()
-            st.session_state["pdf_report"] = pdf_data
-            st.success("Report Generated! Click download below.")
+
+        report = st.session_state.reporter.generate_pipeline_health_report()
+
+        # Remove characters not supported by latin-1
+        clean_report = report.encode("latin-1", "ignore").decode("latin-1")
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # Title
+        pdf.set_font("Arial", "B", 18)
+        pdf.cell(0, 12, "Provider Roster Pipeline Health Report", ln=True)
+        pdf.ln(4)
+
+        lines = clean_report.split("\n")
+
+        def _sanitize(text: str) -> str:
+            """Strip any character that can't be encoded in latin-1 (fpdf2 Arial font limit)."""
+            return text.encode("latin-1", "replace").decode("latin-1")
+
+        for line in lines:
+
+            # Remove common emojis and special symbols
+            for ch in ["📋","🚀","⚠️","📉","🔍","💡","✅","❌","→","←","≥","≤","★","•","►","▼","▲"]:
+                line = line.replace(ch, "")
+
+            # MAIN TITLE
+            if line.startswith("# "):
+                pdf.set_font("Arial", "B", 18)
+                pdf.cell(0, 10, line.replace("# ", ""), ln=True)
+                pdf.ln(3)
+
+            # SECTION HEADER
+            elif line.startswith("## "):
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(0, 8, line.replace("## ", ""), ln=True)
+                pdf.ln(2)
+
+            # Skip markdown table separator
+            elif line.startswith("|---"):
+                continue
+
+            # TABLE ROW
+            elif "|" in line:
+                columns = [c.strip() for c in line.split("|") if c.strip()]
+                col_width = 190 / len(columns)
+
+                pdf.set_font("Arial", "", 10)
+
+                for col in columns:
+                    pdf.cell(col_width, 8, _sanitize(col), border=1)
+
+                pdf.ln()
+
+            # NORMAL TEXT
+            else:
+                pdf.set_font("Arial", "", 11)
+                pdf.multi_cell(0, 7, _sanitize(line))
+
+        # Store PDF in session state
+        st.session_state["pdf_report"] = pdf.output(dest="S").encode("latin-1")
 
 
     # Show download button only once
@@ -281,17 +339,20 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
     # 2. Process with the Intelligent Agent Graph
     fig = None 
     
+    p = prompt.lower()
     # Special shortcuts for visualizations (stay for UX speed)
-    if "trend" in prompt.lower() or "market" in prompt.lower():
+    if "trend" in p or "scs" in p or "success rate" in p or "percent" in p or \
+       ("market" in p and "root cause" not in p and "why" not in p):
         content = "Analyzing Market SCS_PERCENT trends..."
         fig = st.session_state.viz.plot_market_trend("GA") 
-    elif "stuck" in prompt.lower() or "triage" in prompt.lower():
+    elif "stuck" in p or "triage" in p or "bottleneck" in p or \
+         "stall" in p or "frozen" in p or "hung" in p or "blocked" in p or "pending" in p:
         content = "Triaging active bottlenecks..."
         fig = st.session_state.viz.plot_stuck_ro_tracker()
-    elif "anomaly" in prompt.lower() or "slow" in prompt.lower():
+    elif "anomal" in p or "slow" in p or "duration" in p or "delay" in p or "deviation" in p:
         content = "Analyzing duration deviations..."
         fig = st.session_state.viz.plot_duration_anomaly()
-    elif "report" in prompt.lower():
+    elif "report" in p or "health" in p or "pipeline status" in p or "summary" in p:
         content = st.session_state.reporter.generate_pipeline_health_report()
     else:
         # FULL AGENT GRAPH INVOCATION
@@ -303,6 +364,8 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
             config = {"configurable": {"thread_id": st.session_state.session_id}}
             result = st.session_state.agent.invoke(inputs, config)
             content = result.get("final_answer", "I encountered an error processing your request.")
+    except Exception as e:
+        content = f"⚠️ Agent error: {type(e).__name__}: {str(e)[:300]}"
 
     # 3. Log the interaction to Episodic Memory
     log_interaction(st.session_state.session_id, prompt, content)
