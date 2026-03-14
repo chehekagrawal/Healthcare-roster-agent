@@ -4,10 +4,11 @@ import plotly.graph_objects as go
 from datetime import datetime
 from fpdf import FPDF
 import time
+from dotenv import load_dotenv
+load_dotenv()  # Load .env FIRST before any src imports that need API keys
 
 # Import your Tier 1/2/3 Backend
 from src.db.duckdb_engine import MetricsEngine
-from src.tools.data_query import DataQueryTool
 from src.tools.visualizer import Visualizer
 from src.tools.report_gen import ReportGenerator
 from src.memory.episodic import log_interaction, get_history, save_data_snapshot, DB_NAME
@@ -338,17 +339,20 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
     # 2. Process with the Intelligent Agent Graph
     fig = None 
     
+    p = prompt.lower()
     # Special shortcuts for visualizations (stay for UX speed)
-    if "trend" in prompt.lower() or "market" in prompt.lower():
+    if "trend" in p or "scs" in p or "success rate" in p or "percent" in p or \
+       ("market" in p and "root cause" not in p and "why" not in p):
         content = "Analyzing Market SCS_PERCENT trends..."
         fig = st.session_state.viz.plot_market_trend("GA") 
-    elif "stuck" in prompt.lower() or "triage" in prompt.lower():
+    elif "stuck" in p or "triage" in p or "bottleneck" in p or \
+         "stall" in p or "frozen" in p or "hung" in p or "blocked" in p or "pending" in p:
         content = "Triaging active bottlenecks..."
         fig = st.session_state.viz.plot_stuck_ro_tracker()
-    elif "anomaly" in prompt.lower() or "slow" in prompt.lower():
+    elif "anomal" in p or "slow" in p or "duration" in p or "delay" in p or "deviation" in p:
         content = "Analyzing duration deviations..."
         fig = st.session_state.viz.plot_duration_anomaly()
-    elif "report" in prompt.lower():
+    elif "report" in p or "health" in p or "pipeline status" in p or "summary" in p:
         content = st.session_state.reporter.generate_pipeline_health_report()
     else:
         # FULL AGENT GRAPH INVOCATION
@@ -360,6 +364,8 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
             config = {"configurable": {"thread_id": st.session_state.session_id}}
             result = st.session_state.agent.invoke(inputs, config)
             content = result.get("final_answer", "I encountered an error processing your request.")
+    except Exception as e:
+        content = f"⚠️ Agent error: {type(e).__name__}: {str(e)[:300]}"
 
     # 3. Log the interaction to Episodic Memory
     log_interaction(st.session_state.session_id, prompt, content)
