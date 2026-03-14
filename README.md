@@ -11,7 +11,7 @@
 
 *Autonomous AI agent for healthcare provider roster pipeline monitoring, anomaly detection, and cross-market analysis — with persistent, layered memory.*
 
-**[Demo Video](PUT_DEMO_VIDEO_LINK_HERE)** · **[Report](./report.md)** · **[Architecture](#architecture)**
+**[Demo Video](https://youtu.be/ulLDvaItvpg)**
 
 </div>
 
@@ -59,20 +59,7 @@
 | 🔗 **Root Cause Chaining** | Traces low SCS_PERCENT → orgs → source systems → pipeline stages |
 | 📈 **Cross-CSV Analysis** | Links file-level health (CSV1) to market success rates (CSV2) |
 
-### Key Features Spotlight
 
-### Key Features Spotlight
-
-| Market Health Heatmap |
-| :---: |
-| | Stage: Pre-proc | Stage: Mapping | Stage: ISF Gen | Stage: DART Gen | Stage: SPS Load |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **GA** | 🟢 | 🟢 | 🟢 | 🔴 | 🟢 |
-| **NY** | 🟢 | 🟢 | 🟡 | 🟢 | 🟢 |
-| **TX** | 🟢 | 🟢 | 🟢 | 🟢 | 🟡 |
-| **CA** | 🟡 | 🟢 | 🟢 | 🔴 | 🟢 |
-
-_Systemic health visualization revealing stage-wide bottlenecks across CA, FL, GA, NY, and TX._
 
 ---
 
@@ -278,62 +265,72 @@ Agent: [Web search: Tavily]
        Relevance: May explain increased validation failures in TX LOB=Medicaid FFS
 ```
 
-## 📊 Insights & Analytics Gallery
+## 📊 Insights & Analytics — Data-Driven Visualizations
 
-RosterIQ generates high-fidelity, actionable visualizations to guide operations teams.
-
-| Duration Anomaly Detection | Market SCS Trend Tracking |
-|---|---|
-| ![Duration Anomaly Chart](assets/website/img_3.jpeg) | ![Market Success Trends Chart](assets/website/img_1.jpeg) |
-
-| Stuck RO Triage Tracker | Retry Effectiveness Analysis |
-|---|---|
-| ![Stuck RO Severity Tracker](assets/website/img_2.jpeg) | [Detailed Metrics available in the PDF Report below] |
+> All charts below are generated from the **actual operational dataset** (59,975 ROs across 32 US state markets).
 
 ---
 
-### Export Report
-```
-You:   Export pipeline health report
-Agent: ✅ Report ready! [Download PDF]
-```
+### 🔵 Chart 1 — RO Pipeline Stage Distribution
+> Where are ROs currently sitting across the pipeline?
 
-![Diagnostic PDF Report Preview](assets/website/report_img_1.jpeg)
-_High-fidelity PDF report featuring executive KPI cards and zebra-striped bottleneck tables._
+![Pipeline Stage Distribution](assets/charts/chart_stage_distribution.png)
+
+**Key finding:** `STOPPED` (10,164) and `DART_GENERATION` (3,716) represent the two largest stall points — together blocking **~23% of all active ROs** from progressing. Only 46.6% have reached `RESOLVED`.
 
 ---
 
-## Project Structure
+### 🔴 Chart 2 — Pipeline Failure Rate by State (Top 10)
+> Which US state markets have the highest proportion of failed ROs?
+
+![State Failure Rate](assets/charts/chart_state_failure.png)
+
+**Key finding:** `GA` (5.0%), `CT` (5.4%), and `MD` (5.2%) are the top critical markets by failure rate. These three states account for a disproportionate share of `IS_FAILED=1` ROs and directly drive down their respective `SCS_PERCENT` scores in CSV 2.
+
+---
+
+### 🟡 Chart 3 — Market SCS_PERCENT by State vs. 95% SLA Target
+> Which state markets are meeting the service level agreement?
+
+![Market SCS_PERCENT](assets/charts/chart_market_scs.png)
+
+**Key finding:** **18 of 31 markets** are currently below the 95% SLA threshold. `NM` (71%), `FL` (81.6%), and `GA` (82%) are the most critical — indicating systemic pipeline failures feeding through from CSV 1 into lagging market-level scores.
+
+---
+
+### 🔴 Chart 4 — Stage Duration vs Historical Average (Anomaly Detection)
+> Which pipeline stages are running significantly over their historical baselines?
+
+![Duration Anomaly](assets/charts/chart_duration_anomaly.png)
+
+**Key finding:** `DART_GEN` is running at a median of **27.4× its historical average** — a severe anomaly. This is the primary bottleneck stage in the dataset and the root cause traced by RosterIQ when markets like GA and FL report below-SLA SCS_PERCENT scores.
+
+---
 
 ```
 Healthcare-roster-agent/
 │
-├── app.py                          # Streamlit frontend + routing logic
+├── app.py                          # Streamlit application
 │
 ├── src/
-│   ├── agent/
-│   │   ├── graph.py                # LangGraph agent graph assembly
-│   │   ├── nodes.py                # Agent node implementations
-│   │   ├── state.py                # RosterIQState TypedDict
-│   │   ├── monitor.py              # Background proactive monitoring
-│   │   └── prompts.py              # LLM system prompts
-│   │
-│   ├── memory/
-│   │   ├── episodic.py             # SQLite + ChromaDB interaction logging
-│   │   ├── procedural.py           # Procedure registry + ChromaDB lookup
-│   │   ├── semantic.py             # Domain knowledge base (600+ facts)
-│   │   ├── change_detector.py      # Cross-session state diff detection
-│   │   └── procedures.json         # Versioned procedure definitions
-│   │
-│   ├── tools/
-│   │   ├── data_query.py           # DuckDB analytics wrapper
-│   │   ├── visualizer.py           # Plotly chart generators (5 types)
-│   │   ├── report_gen.py           # Markdown + PDF report generator
-│   │   ├── root_cause.py           # Causal chain tracer (CSV1 ↔ CSV2)
-│   │   └── web_search.py           # Tavily search integration
-│   │
-│   └── db/
-│       └── duckdb_engine.py        # MetricsEngine wrapping DuckDB + CSVs
+│   ├── agent/                      # Multi-agent logic
+│   ├── memory/                     # Three-layer memory stores
+│   ├── tools/                      # Analytical tool suite
+│   └── db/                         # DuckDB data engine
+│
+├── data/                           # Operational CSV Datasets
+├── assets/                         # Visuals & Charts
+├── memory/                         # Vector database storage
+├── tests/                          # Automated tests
+│
+├── rosteriq_submission_report.pdf  # Final Documentation
+├── requirements.txt
+├── .env
+└── .gitignore
+```
+---
+
+## Environment Variables
 │
 ├── data/                           # CSVs go here (gitignored)
 │   ├── roster_processing_details.csv
@@ -361,8 +358,8 @@ GOOGLE_API_KEY=AIzaSy...
 # Get your key at: https://app.tavily.com/
 TAVILY_API_KEY=tvly-...
 
-# Optional: ChromaDB storage path (defaults to ./memory/chromadb)
-CHROMADB_PATH=memory/chromadb
+# Optional: Persistence path (defaults to ./persistence)
+CHROMADB_PATH=persistence/chroma_db
 ```
 
 > **Never commit your `.env` file.** It is listed in `.gitignore`.

@@ -12,7 +12,7 @@ from src.memory.semantic import _EMBED_FN
 # and Data State Snapshots (KPIs over time).
 DB_NAME = "roster_iq_memory.db"
 # Initialize ChromaDB for Semantic Search (Requirement A4)
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_client = chromadb.PersistentClient(path="memory/chromadb")
 try:
     episodic_collection = chroma_client.get_or_create_collection(name="episodic_memory", embedding_function=_EMBED_FN)
 except ValueError:
