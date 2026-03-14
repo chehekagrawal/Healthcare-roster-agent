@@ -330,20 +330,6 @@ Healthcare-roster-agent/
 ```
 ---
 
-## Environment Variables
-│
-├── data/                           # CSVs go here (gitignored)
-│   ├── roster_processing_details.csv
-│   └── aggregated_operational_metrics.csv
-│
-├── tests/                          # Unit + integration tests
-├── report.md                       # Full submission report
-├── requirements.txt
-├── .env.example
-└── .gitignore
-```
-
----
 
 ## Environment Variables
 
