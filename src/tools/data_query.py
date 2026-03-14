@@ -31,7 +31,7 @@ class DataQueryTool:
     def __init__(self, metrics_engine: MetricsEngine):
         self.engine = metrics_engine
 
-    # Task A2.1: Execute validated SQL
+    # Execute validated SQL
     def query_duckdb(self, sql_query: str):
         """Executes SQL against the roster and market views."""
         try:
@@ -39,7 +39,7 @@ class DataQueryTool:
         except Exception as e:
             return f"SQL Error: {str(e)}"
 
-    # Task A2.2 & A5 Upgrade: derive_metrics
+    # Upgrade: derive_metrics
     def derive_metrics(self, metric_type: str, filters: str = ""):
         """
         Computes the 5 specific metrics requested in Task A2.
@@ -76,21 +76,24 @@ class DataQueryTool:
             """)
 
         elif metric_type == "stuck_duration":
-            # Task A2.2: DATEDIFF(NOW, LATEST_OBJECT_RUN_DT)
-            # FIX: Cast current_timestamp to TIMESTAMP to match the column type
             return self.engine.query(f"""
                 SELECT 
-                    RO_ID, 
+                    RO_ID,
                     ORG_NM,
-                    date_diff('minute', CAST(LATEST_OBJECT_RUN_DT AS TIMESTAMP), CAST(current_timestamp AS TIMESTAMP)) as minutes_stuck
+                    CNT_STATE,
+                    LATEST_STAGE_NM,
+                    date_diff('minute',
+                        CAST(LATEST_OBJECT_RUN_DT AS TIMESTAMP),
+                        CAST(current_timestamp AS TIMESTAMP)
+                    ) as minutes_stuck
                 FROM roster_ops 
-                WHERE IS_STUCK = 1 
+                WHERE IS_STUCK = 1
                 {filters.replace('WHERE', 'AND') if filters else ''}
             """)
 
         return None
 
-    # Task A2.3: detect_anomalies
+    # Detect_anomalies
     def detect_anomalies(self, threshold_multiplier: float = 2.0):
         """
         Flags ROs where actual duration > N × AVG.
@@ -103,7 +106,7 @@ class DataQueryTool:
                OR sps_deviation > {threshold_multiplier}
         """)
 
-    # Task A2.4 & A5 Upgrade: cross_table_join
+    # Upgrade: cross_table_join
     def cross_table_join(self, state: str):
         """
         Correlates CSV1 health signals with CSV2 SCS_PERCENT.
@@ -114,7 +117,7 @@ class DataQueryTool:
         """)
 
 # -------------------------------------------------
-# Task A5: Triage Stuck ROs (DuckDB Version)
+# Triage Stuck ROs (DuckDB Version)
 # -------------------------------------------------
 def triage_stuck_ros_v2(engine: MetricsEngine):
     """
