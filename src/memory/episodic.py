@@ -3,6 +3,7 @@ import json
 import chromadb
 from chromadb.config import Settings
 from datetime import datetime
+from src.memory.semantic import _EMBED_FN
 
 # ==========================================
 # EPISODIC MEMORY DATABASE (SQLite)
@@ -12,7 +13,7 @@ from datetime import datetime
 DB_NAME = "roster_iq_memory.db"
 # Initialize ChromaDB for Semantic Search (Requirement A4)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
-episodic_collection = chroma_client.get_or_create_collection(name="episodic_memory")
+episodic_collection = chroma_client.get_or_create_collection(name="episodic_memory", embedding_function=_EMBED_FN)
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
