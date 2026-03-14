@@ -3,14 +3,16 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 from fpdf import FPDF
+import time
 
 # Import your Tier 1/2/3 Backend
 from src.db.duckdb_engine import MetricsEngine
 from src.tools.data_query import DataQueryTool
 from src.tools.visualizer import Visualizer
 from src.tools.report_gen import ReportGenerator
-from src.memory.episodic import log_interaction, get_history, save_data_snapshot
+from src.memory.episodic import log_interaction, get_history, save_data_snapshot, DB_NAME
 from src.memory.change_detector import ChangeDetector
+import sqlite3
 
 # ==========================================
 # 🎨 EXTRAORDINARY UI CONFIGURATION
@@ -95,7 +97,27 @@ if 'engine' not in st.session_state:
     st.session_state.reporter = ReportGenerator(st.session_state.engine)
     st.session_state.detector = ChangeDetector(st.session_state.engine)
     st.session_state.messages = []
+
+# --- Session Thread Management ---
+def get_all_sessions():
+    """Retrieve all unique session IDs from the database."""
+    try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT session_id FROM interactions ORDER BY timestamp DESC")
+        sessions = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        return sessions
+    except Exception:
+        return []
+
+available_sessions = get_all_sessions()
+new_session_str = "+ Start New Session"
+session_options = [new_session_str] + available_sessions
+
+if 'session_id' not in st.session_state:
     st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+
 
 # ==========================================
 # 📟 SIDEBAR: MEMORY & PROACTIVE MONITORING
@@ -105,6 +127,25 @@ with st.sidebar:
     st.title("RosterIQ")
     st.caption(f"Status: Operational | {st.session_state.session_id}")
     
+    # --- A6: Session picker ---
+    selected_session = st.selectbox("Select Session Thread", options=session_options)
+    if selected_session == new_session_str:
+        if st.button("Initialize New Thread"):
+            st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+            st.session_state.messages = []
+            st.rerun()
+    elif selected_session != st.session_state.session_id:
+        st.session_state.session_id = selected_session
+        st.session_state.messages = [] # Clear UI chat messages on switch
+        st.rerun()
+
+    st.divider()
+    
+    # --- A6: Memory Sidebar (Partner C output) ---
+    with st.expander("🧠 Episodic Memory (Current Thread)", expanded=False):
+        history_text = get_history(st.session_state.session_id, limit=5)
+        st.markdown(f"<div style='font-size:0.8rem; color:#A0AEC0;'>{history_text}</div>", unsafe_allow_html=True)
+
     st.divider()
     
     # PROACTIVE MONITORING (Improved Professional UI)
@@ -244,6 +285,12 @@ with st.sidebar:
 st.title("🧬 Provider Roster Intelligence")
 st.markdown("Autonomous monitoring and diagnostic agent for provider operations.")
 
+def stream_data(text: str):
+    """Generator for streaming text with a typing effect."""
+    for word in text.split(" "):
+        yield word + " "
+        time.sleep(0.02)
+
 # Display Chat History (FIXED: Simplified for proper Markdown rendering)
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -300,14 +347,21 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
     # 3. Log the interaction to Episodic Memory
     log_interaction(st.session_state.session_id, prompt, content)
 
-    # 4. Save the Agent's message to the session state
+    # 4. Display and Stream the Assistant Response (Task A6)
+    with st.chat_message("assistant"):
+        # This renders the "typing" effect live
+        st.write_stream(stream_data(content))
+        if fig:
+            st.plotly_chart(fig, use_container_width=True)
+
+    # 5. Save the Agent's message to the session state
     agent_message = {"role": "assistant", "content": content}
     if fig:
         agent_message["fig"] = fig
     st.session_state.messages.append(agent_message)
 
     # 5. RERUN THE SCRIPT to display the new messages
-    st.rerun()
+    # st.rerun()
 
 # --- Everything below this is outside the 'if prompt' block ---
 
