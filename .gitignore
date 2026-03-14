@@ -1,49 +1,43 @@
-# Security: API Keys and Secrets
+# ============================================================
+# RosterIQ — .gitignore
+# ============================================================
+
+# ── Security ──────────────────────────────────────────────────
 .env
 
-# Databases
+# ── Databases (SQLite runtime files) ──────────────────────────
 *.db
 *.sqlite3
+*.db-shm
+*.db-wal
+*.db-journal
 
-# Python: Byte-compiled / optimized / DLL files
+# ── Vector Store (ChromaDB runtime data) ──────────────────────
+chroma_db/
+memory/
+memory/chromadb/
+
+# ── Python ────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Python: Virtual Environments
-venv/
-env/
-# Security: API Keys and Secrets
-.env
-
-# Databases
-*.db
-*.sqlite3
-
-# Python: Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Python: Virtual Environments
+# ── Virtual Environments ──────────────────────────────────────
 venv/
 env/
 .venv/
 
-# Operating System Files
+# ── IDE ───────────────────────────────────────────────────────
+.vscode/
+.idea/
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+
+# ── Temp / OS ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-
-# Large Data (Optional - list specific files if they are huge)
-# data/*.csv
-
-# Large Data & Target ignores
-# data/*.csv
-memory/chromadb/
-problemstatement.md
-
 src/agent/tempCodeRunnerFile.py
-roster_iq_threads.db-shm
-roster_iq_threads.db-wal
 
-chroma_db/*
+# ── Problem Statement (internal only) ─────────────────────────
+problemstatement.md
