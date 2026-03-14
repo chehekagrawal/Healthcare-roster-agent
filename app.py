@@ -234,11 +234,68 @@ with st.sidebar:
     
     # Generate PDF when export button is clicked
     if st.button("📄 Export Pipeline Health Report"):
-        with st.spinner("Generating Diagnostic Report..."):
-            # Call the high-fidelity PDF backend
-            pdf_data = st.session_state.reporter.generate_pdf_report()
-            st.session_state["pdf_report"] = pdf_data
-            st.success("Report Generated! Click download below.")
+
+        report = st.session_state.reporter.generate_pipeline_health_report()
+
+        # Remove characters not supported by latin-1
+        clean_report = report.encode("latin-1", "ignore").decode("latin-1")
+
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # Title
+        pdf.set_font("Arial", "B", 18)
+        pdf.cell(0, 12, "Provider Roster Pipeline Health Report", ln=True)
+        pdf.ln(4)
+
+        lines = clean_report.split("\n")
+
+        def _sanitize(text: str) -> str:
+            """Strip any character that can't be encoded in latin-1 (fpdf2 Arial font limit)."""
+            return text.encode("latin-1", "replace").decode("latin-1")
+
+        for line in lines:
+
+            # Remove common emojis and special symbols
+            for ch in ["📋","🚀","⚠️","📉","🔍","💡","✅","❌","→","←","≥","≤","★","•","►","▼","▲"]:
+                line = line.replace(ch, "")
+
+            # MAIN TITLE
+            if line.startswith("# "):
+                pdf.set_font("Arial", "B", 18)
+                pdf.cell(0, 10, line.replace("# ", ""), ln=True)
+                pdf.ln(3)
+
+            # SECTION HEADER
+            elif line.startswith("## "):
+                pdf.set_font("Arial", "B", 14)
+                pdf.cell(0, 8, line.replace("## ", ""), ln=True)
+                pdf.ln(2)
+
+            # Skip markdown table separator
+            elif line.startswith("|---"):
+                continue
+
+            # TABLE ROW
+            elif "|" in line:
+                columns = [c.strip() for c in line.split("|") if c.strip()]
+                col_width = 190 / len(columns)
+
+                pdf.set_font("Arial", "", 10)
+
+                for col in columns:
+                    pdf.cell(col_width, 8, _sanitize(col), border=1)
+
+                pdf.ln()
+
+            # NORMAL TEXT
+            else:
+                pdf.set_font("Arial", "", 11)
+                pdf.multi_cell(0, 7, _sanitize(line))
+
+        # Store PDF in session state
+        st.session_state["pdf_report"] = pdf.output(dest="S").encode("latin-1")
 
 
     # Show download button only once
