@@ -34,11 +34,15 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
     This fulfills the C4 Agent Memory Nodes requirement.
     """
     # 1. Fetch episodic context (mocked until Episodic is fully integrated by Engineer 1)
-    episodic_events = [
-        {"timestamp": "2026-03-13T10:00:00Z", "intent": "Checked overall pipeline health"},
-        {"timestamp": "2026-03-13T10:05:00Z", "intent": "Traced root cause for Florida drops"},
-        {"timestamp": "2026-03-13T10:15:00Z", "intent": "Ran stuck RO triage procedure"}
-    ]
+    try:
+        from src.memory.episodic import get_history
+        session_id = state.get("session_id", "default_session")
+        # get_history returns formatted string, convert a brief summary list for the agent
+        raw_history = get_history(session_id, limit=3)
+        episodic_events = [{"context": raw_history}] if "No previous memory" not in raw_history else []
+    except Exception as e:
+        print(f"Warning: Episodic retrieval failed: {e}")
+        episodic_events = []
     
     # 2. Fetch semantic KB hits based on latest message
     semantic_hits = []
@@ -49,15 +53,26 @@ def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
         try:
             from src.memory.semantic import semantic_memory
             # Retrieve the top 3 semantically relevant facts from ChromaDB
-            hits = semantic_memory.fetch_semantic_knowledge(query, n_results=3)
-            # The 'documents' key returns a list of lists: [[doc1, doc2, doc3]]
-            if "documents" in hits and hits["documents"]:
-                semantic_hits = hits["documents"][0]
+            hits = semantic_memory.fetch(query, top_k=3)
+            # fetch() returns List[str] directly
+            if hits:
+                semantic_hits = hits
         except Exception as e:
             print(f"Warning: Semantic retrieval failed: {e}")
             
     # 3. Change diff tracker (mocked for now, waiting on Engineer 1 integration)
-    change_summary = "3 things changed since last session: 1 new critical anomaly, Florida SLA degraded."
+    try:
+        from src.memory.change_detector import ChangeDetector
+        # We need the initialized engine; checking if it was imported successfully
+        if 'engine' in globals():
+            detector = ChangeDetector(engine)
+            changes = detector.detect_all_changes()
+            change_summary = f"Resolutions: {len(changes['resolutions'])}, New Anomalies: {len(changes['new_anomalies'])}, KPI Drifts: {len(changes['kpi_drift'])}"
+        else:
+            change_summary = "Engine not available for ChangeDetector."
+    except Exception as e:
+        print(f"Warning: Change detection failed: {e}")
+        change_summary = "Change detection unvailable."
     
     # 4. Procedures loaded + versions
     try:
@@ -106,8 +121,17 @@ def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
     }
     
     # Note: Calling Engineer 1's SQLite/Chroma Episodic DB writer here
-    # from src.memory.episodic import log_episodic_event
-    # log_episodic_event(event)
+    try:
+        from src.memory.episodic import log_episodic_event
+        log_episodic_event(
+            session_id=session_id,
+            intent=user_intent,
+            findings=state["final_answer"],
+            kpis={"tools": event["tools_used"], "procedures": event["procedures_run"]},
+            severity="Low"
+        )
+    except Exception as e:
+        print(f"Warning: Could not log episodic event: {e}")
 
     print(f"[Memory Writer] Logged episodic event for session {session_id}")
     
@@ -206,6 +230,24 @@ def market_analytics_node(state):
         # Call your Extraordinary Root Cause Tool (Bonus Task)
         analysis = tracer.trace_market_failure(target_state)
         context = f"Root Cause Narrative: {analysis['narrative']}"
+    elif "search" in query.lower() or "what is" in query.lower() or "definition" in query.lower():
+        # C3: Web Search Tool execution
+        from src.tools.web_search import web_search
+        
+        # Decide context template based on keywords
+        template = "general"
+        if "validation" in query.lower() or "availity" in query.lower():
+            template = "complete_validation_failure"
+        elif "medicaid" in query.lower() or "cms" in query.lower() or "rule" in query.lower():
+            template = "cms_rule_changes"
+            
+        results = web_search.search(query, context_type=template)
+        
+        # Try to enrich the Semantic KB immediately with these findings
+        enriched = web_search.enrich_semantic_kb(results)
+        enrich_status = "(These findings were saved to the Semantic KB for future reasoning)" if enriched else ""
+        
+        context = f"Web Search Results for '{query}' [{template}]:\n{results}\n{enrich_status}"
     else:
         # Call your Cross-Table Join tool
         data = query_tool.cross_table_join(target_state)
