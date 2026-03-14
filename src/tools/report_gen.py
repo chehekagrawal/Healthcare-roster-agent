@@ -1,3 +1,5 @@
+import os
+import time
 from datetime import datetime
 from fpdf import FPDF
 from src.db.duckdb_engine import MetricsEngine
@@ -106,7 +108,7 @@ class ReportGenerator:
         pdf.set_text_color(120, 120, 120)
         pdf.cell(0, 10, "Confidential - RosterIQ Proprietary Intelligence Report", align='C')
 
-        return pdf.output(dest="S").encode("latin-1")
+        return pdf.output(dest="S").encode("latin-1") if isinstance(pdf.output(dest="S"), str) else pdf.output(dest="S")
 
     def _draw_zebra_table(self, pdf, headers, rows, widths):
         """Helper to draw professional zebra-striped tables."""
