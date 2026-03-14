@@ -227,6 +227,7 @@ def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
         User Query: {query}
         """
         
+        llm = get_llm()
         if llm:
             response = llm.invoke([HumanMessage(content=prompt)])
             text = response.content.lower().strip()
@@ -294,6 +295,7 @@ def pipeline_health_node(state: RosterIQState) -> Dict[str, Any]:
     
     try:
         from langchain_core.messages import HumanMessage
+        llm = get_llm()
         if llm:
             response = llm.invoke([HumanMessage(content=prompt)])
             answer = response.content
@@ -348,6 +350,7 @@ def market_analytics_node(state: RosterIQState) -> Dict[str, Any]:
     
     try:
         from langchain_core.messages import HumanMessage
+        llm = get_llm()
         if llm:
             response = llm.invoke([HumanMessage(content=prompt)])
             answer = response.content

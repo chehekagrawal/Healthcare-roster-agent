@@ -22,74 +22,57 @@ import sqlite3
 # ==========================================
 st.set_page_config(page_title="RosterIQ | Intelligence Agent", page_icon="🧬", layout="wide")
 
-# Custom CSS for Glassmorphism and Neon Accents
-# FIX: Changed unsafe_allow_value to unsafe_allow_html
+# Custom CSS — restored original working theme
 st.markdown("""
 <style>
 .main { background-color: #0E1117; }
 
-.stSidebar { 
-    background-color: rgba(255, 255, 255, 0.05); 
-    backdrop-filter: blur(10px); 
+[data-testid="stSidebar"] {
+    background-color: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(10px);
 }
 
-.stButton>button { 
+.stButton > button {
     background: linear-gradient(90deg, #00C9FF 0%, #92FE9D 100%);
     color: black;
     font-weight: bold;
-    border-radius: 5px;
+    border-radius: 8px;
     width: 100%;
+    border: none;
+    transition: opacity 0.2s;
 }
+.stButton > button:hover { opacity: 0.85; }
 
-/* Chat bubble styling */
 [data-testid="stChatMessageContent"] > div {
     padding: 14px;
     border-radius: 12px;
     border: 1px solid rgba(255,255,255,0.1);
-    font-size: 0.9rem;   /* smaller text */
-    line-height: 1.5;
+    font-size: 0.9rem;
+    line-height: 1.55;
 }
-
-/* User message bubble */
-div[data-testid="stChatMessageUser"] 
-[data-testid="stChatMessageContent"] > div {
+div[data-testid="stChatMessageUser"] [data-testid="stChatMessageContent"] > div {
     background-color: rgba(0, 201, 255, 0.1);
     border-left: 4px solid #00C9FF;
 }
-
-/* Assistant message bubble */
-div[data-testid="stChatMessageAssistant"] 
-[data-testid="stChatMessageContent"] > div {
+div[data-testid="stChatMessageAssistant"] [data-testid="stChatMessageContent"] > div {
     background-color: rgba(146, 254, 157, 0.05);
     border-left: 4px solid #92FE9D;
 }
 
-/* Reduce markdown heading sizes inside chat */
-[data-testid="stChatMessageContent"] h3 {
-    font-size: 1.2rem;
-}
+[data-testid="stChatMessageContent"] h3 { font-size: 1.2rem; }
+[data-testid="stChatMessageContent"] h4 { font-size: 1rem; }
+[data-testid="stChatMessageContent"] p  { font-size: 0.9rem; }
+[data-testid="stMarkdownContainer"] p   { line-height: 1.6; }
 
-[data-testid="stChatMessageContent"] h4 {
-    font-size: 1rem;
-}
-
-[data-testid="stChatMessageContent"] p {
-    font-size: 0.9rem;
-}
-            
-[data-testid="stMarkdownContainer"] p {
-    line-height: 1.6;
-}
-
-.stMetric { 
+[data-testid="stMetric"] {
     background: rgba(255,255,255,0.03);
     padding: 12px;
     border-radius: 12px;
     border: 1px solid rgba(255,255,255,0.1);
 }
-
 </style>
 """, unsafe_allow_html=True)
+
 
 # ==========================================
 # 🧠 INITIALIZATION & STATE MANAGEMENT
@@ -136,18 +119,20 @@ with st.sidebar:
     st.image("https://img.icons8.com/nolan/64/artificial-intelligence.png", width=60)
     st.title("RosterIQ")
     st.caption(f"Status: Operational | {st.session_state.session_id}")
-    
-    # --- A6: Session picker ---
-    selected_session = st.selectbox("Select Session Thread", options=session_options)
-    if selected_session == new_session_str:
-        if st.button("Initialize New Thread"):
-            st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+
+    # --- Option B: Always-visible New Session button + Session switcher ---
+    if st.button("＋ New Session"):
+        st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+        st.session_state.messages = []
+        st.rerun()
+
+    available_sessions = get_all_sessions()
+    if available_sessions:
+        selected_session = st.selectbox("Switch to past session", options=available_sessions)
+        if selected_session != st.session_state.session_id:
+            st.session_state.session_id = selected_session
             st.session_state.messages = []
             st.rerun()
-    elif selected_session != st.session_state.session_id:
-        st.session_state.session_id = selected_session
-        st.session_state.messages = [] # Clear UI chat messages on switch
-        st.rerun()
 
     st.divider()
     
@@ -159,34 +144,48 @@ with st.sidebar:
     st.divider()
     
     # --- Bonus: Proactive Monitoring (Real-time Scanner) ---
-    st.subheader("🚨 Live Alerts (Autonomous)")
+    st.markdown("<p style='font-size:0.7rem;text-transform:uppercase;letter-spacing:1.5px;color:#718096;margin-bottom:8px;'>🚨 Live Alerts (Autonomous)</p>", unsafe_allow_html=True)
     bg_alerts = get_active_alerts(limit=3)
     if bg_alerts:
         for alert in bg_alerts:
-            color = "#E53E3E" if alert['severity'] == "High" else "#DD6B20"
+            color = "#FF4D6D" if alert['severity'] == "High" else "#FF9A3C"
+            glow  = "rgba(255,77,109,0.15)" if alert['severity'] == "High" else "rgba(255,154,60,0.12)"
             st.markdown(f"""
-            <div style="background:rgba(255,255,255,0.03); border-left:4px solid {color}; padding:10px; border-radius:8px; margin-bottom:10px;">
-                <p style="margin:0; font-weight:bold; font-size:0.85rem;">{alert['type']}</p>
-                <p style="margin:0; font-size:0.8rem; line-height:1.3;">{alert['message']}</p>
+            <div style="background:linear-gradient(135deg,{glow},rgba(255,255,255,0.02));
+                        border:1px solid {color}40; border-left:3px solid {color};
+                        padding:10px 12px; border-radius:10px; margin-bottom:8px;
+                        box-shadow:0 2px 12px {glow};">
+                <p style="margin:0;font-size:0.7rem;font-weight:700;letter-spacing:1px;
+                           text-transform:uppercase;color:{color};">{alert['type']}</p>
+                <p style="margin:4px 0 0;font-size:0.78rem;line-height:1.4;color:#CBD5E0;">{alert['message']}</p>
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.caption("No critical anomalies detected. System Healthy.")
+        st.markdown("""
+        <div style="background:linear-gradient(135deg,rgba(0,255,179,0.06),rgba(0,207,255,0.03));
+                    border:1px solid rgba(0,255,179,0.25); border-left:3px solid #00FFB3;
+                    padding:10px 12px; border-radius:10px;">
+            <p style="margin:0;font-size:0.78rem;color:#00FFB3;">✓ No critical anomalies detected</p>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.divider()
     
     # 2. Comparison-based Anomalies (Partner A logic)
-    st.subheader("📊 Operational Diff")
+    st.markdown("<p style='font-size:0.7rem;text-transform:uppercase;letter-spacing:1.5px;color:#718096;margin-bottom:8px;'>📊 Operational Diff</p>", unsafe_allow_html=True)
     change_data = st.session_state.detector.detect_all_changes()
     
     # Handle New Anomalies
     if change_data["new_anomalies"]:
         for ro_id in change_data["new_anomalies"]:
             st.markdown(f"""
-            <div class="alert-card">
-                <span class="status-tag tag-new">⚠️ New Anomaly</span>
-                <div style="font-weight: bold; font-size: 0.9rem;">{ro_id}</div>
-                <div style="font-size: 0.8rem; color: #808495;">Stall detected since last session.</div>
+            <div style="background:linear-gradient(135deg,rgba(255,77,109,0.08),rgba(255,255,255,0.02));
+                        border:1px solid rgba(255,77,109,0.3); border-left:3px solid #FF4D6D;
+                        padding:10px 12px; border-radius:10px; margin-bottom:6px;">
+                <p style="margin:0;font-size:0.68rem;font-weight:700;letter-spacing:1px;
+                           text-transform:uppercase;color:#FF4D6D;">⚠ NEW ANOMALY</p>
+                <p style="margin:3px 0 0;font-size:0.82rem;font-weight:600;color:#E2E8F0;">{ro_id}</p>
+                <p style="margin:2px 0 0;font-size:0.75rem;color:#718096;">Stall detected since last session.</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -194,10 +193,13 @@ with st.sidebar:
     if change_data["resolutions"]:
         for ro_id in change_data["resolutions"]:
             st.markdown(f"""
-            <div class="alert-card">
-                <span class="status-tag tag-resolved">✅ Resolved</span>
-                <div style="font-weight: bold; font-size: 0.9rem;">{ro_id}</div>
-                <div style="font-size: 0.8rem; color: #808495;">Pipeline stall successfully cleared.</div>
+            <div style="background:linear-gradient(135deg,rgba(0,255,179,0.07),rgba(255,255,255,0.02));
+                        border:1px solid rgba(0,255,179,0.25); border-left:3px solid #00FFB3;
+                        padding:10px 12px; border-radius:10px; margin-bottom:6px;">
+                <p style="margin:0;font-size:0.68rem;font-weight:700;letter-spacing:1px;
+                           text-transform:uppercase;color:#00FFB3;">✓ RESOLVED</p>
+                <p style="margin:3px 0 0;font-size:0.82rem;font-weight:600;color:#E2E8F0;">{ro_id}</p>
+                <p style="margin:2px 0 0;font-size:0.75rem;color:#718096;">Pipeline stall successfully cleared.</p>
             </div>
             """, unsafe_allow_html=True)
 
@@ -235,6 +237,7 @@ with st.sidebar:
     
     # Generate PDF when export button is clicked
     if st.button("📄 Export Pipeline Health Report"):
+      try:
 
         report = st.session_state.reporter.generate_pipeline_health_report()
 
@@ -281,22 +284,31 @@ with st.sidebar:
             # TABLE ROW
             elif "|" in line:
                 columns = [c.strip() for c in line.split("|") if c.strip()]
+                if not columns:
+                    continue
                 col_width = 190 / len(columns)
-
+                pdf.set_x(pdf.l_margin)
                 pdf.set_font("Arial", "", 10)
-
                 for col in columns:
-                    pdf.cell(col_width, 8, _sanitize(col), border=1)
-
+                    pdf.cell(col_width, 8, _sanitize(col[:40]), border=1)
                 pdf.ln()
+                pdf.set_x(pdf.l_margin)  # Reset cursor after table row
 
             # NORMAL TEXT
             else:
+                pdf.set_x(pdf.l_margin)  # Always reset before multi_cell
                 pdf.set_font("Arial", "", 11)
-                pdf.multi_cell(0, 7, _sanitize(line))
+                if line.strip():
+                    pdf.multi_cell(0, 7, _sanitize(line))
+                else:
+                    pdf.ln(3)
 
         # Store PDF in session state
-        st.session_state["pdf_report"] = pdf.output(dest="S").encode("latin-1")
+        # fpdf2 now returns bytearray directly from output(), no need to encode
+        st.session_state["pdf_report"] = bytes(pdf.output())
+        st.success("✅ Report ready! Click Download below.")
+      except Exception as e:
+        st.error(f"❌ PDF generation failed: {type(e).__name__}: {str(e)}")
 
 
     # Show download button only once
@@ -315,6 +327,7 @@ with st.sidebar:
 # ==========================================
 st.title("🧬 Provider Roster Intelligence")
 st.markdown("Autonomous monitoring and diagnostic agent for provider operations.")
+
 
 def stream_data(text: str):
     """Generator for streaming text with a typing effect."""
@@ -356,16 +369,17 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
         content = st.session_state.reporter.generate_pipeline_health_report()
     else:
         # FULL AGENT GRAPH INVOCATION
-        with st.spinner("Agent Reasoning..."):
-            inputs = {
-                "messages": [("user", prompt)],
-                "session_id": st.session_state.session_id
-            }
-            config = {"configurable": {"thread_id": st.session_state.session_id}}
-            result = st.session_state.agent.invoke(inputs, config)
-            content = result.get("final_answer", "I encountered an error processing your request.")
-    except Exception as e:
-        content = f"⚠️ Agent error: {type(e).__name__}: {str(e)[:300]}"
+        try:
+            with st.spinner("Agent Reasoning..."):
+                inputs = {
+                    "messages": [("user", prompt)],
+                    "session_id": st.session_state.session_id
+                }
+                config = {"configurable": {"thread_id": st.session_state.session_id}}
+                result = st.session_state.agent.invoke(inputs, config)
+                content = result.get("final_answer", "I encountered an error processing your request.")
+        except Exception as e:
+            content = f"⚠️ Agent error: {type(e).__name__}: {str(e)[:400]}"
 
     # 3. Log the interaction to Episodic Memory
     log_interaction(st.session_state.session_id, prompt, content)

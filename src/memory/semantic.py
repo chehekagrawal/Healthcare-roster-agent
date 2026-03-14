@@ -524,11 +524,22 @@ class SemanticMemory:
             path=path,
             settings=Settings(anonymized_telemetry=False),
         )
-        self._collection = self._client.get_or_create_collection(
-            name=collection,
-            embedding_function=_EMBED_FN,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            self._collection = self._client.get_or_create_collection(
+                name=collection,
+                embedding_function=_EMBED_FN,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except ValueError:
+            # Embedding function conflict: old collection used a different embedder.
+            # Delete and recreate with the current SimpleHashEmbeddingFunction.
+            print(f"[SemanticMemory] Embedding conflict detected. Recreating collection '{collection}'...")
+            self._client.delete_collection(collection)
+            self._collection = self._client.create_collection(
+                name=collection,
+                embedding_function=_EMBED_FN,
+                metadata={"hnsw:space": "cosine"},
+            )
         self._seed_if_empty()
 
     # ── Seeding ───────────────────────────────────────────────────────────────
