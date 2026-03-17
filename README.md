@@ -4,18 +4,34 @@
 ### Memory-Driven Provider Roster Intelligence Agent
 
 <div align="center">
-[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)](https://python.org)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-purple?logo=langchain)](https://langchain-ai.github.io/langgraph/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.32+-red?logo=streamlit)](https://streamlit.io)
-[![DuckDB](https://img.shields.io/badge/DuckDB-0.10+-yellow)](https://duckdb.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+
+<a href="https://python.org">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python" />
+</a>
+
+<a href="https://langchain-ai.github.io/langgraph/">
+  <img src="https://img.shields.io/badge/LangGraph-0.2+-purple?logo=langchain" />
+</a>
+
+<a href="https://streamlit.io">
+  <img src="https://img.shields.io/badge/Streamlit-1.32+-red?logo=streamlit" />
+</a>
+
+<a href="https://duckdb.org">
+  <img src="https://img.shields.io/badge/DuckDB-0.10+-yellow" />
+</a>
+
+<a href="LICENSE">
+  <img src="https://img.shields.io/badge/License-MIT-green" />
+</a>
+
+</div>
 
 *Autonomous AI agent for healthcare provider roster pipeline monitoring, anomaly detection, and cross-market analysis — with persistent, layered memory.*
 
 
 **[Demo Video](https://youtu.be/ulLDvaItvpg)**
 
-</div>
 
 ---
 
