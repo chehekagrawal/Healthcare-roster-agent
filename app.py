@@ -11,10 +11,11 @@ load_dotenv()  # Load .env FIRST before any src imports that need API keys
 from src.db.duckdb_engine import MetricsEngine
 from src.tools.visualizer import Visualizer
 from src.tools.report_gen import ReportGenerator
-from src.memory.episodic import log_interaction, get_history, save_data_snapshot, DB_NAME
+from src.memory.episodic import log_interaction, get_history, save_session_snapshot_once, DB_NAME
 from src.memory.change_detector import ChangeDetector
 from src.agent.monitor import ProactiveMonitor, get_active_alerts
 from src.agent.graph import build_roster_graph
+from src.tools.states import detect_state
 import sqlite3
 
 # ==========================================
@@ -75,19 +76,33 @@ div[data-testid="stChatMessageAssistant"] [data-testid="stChatMessageContent"] >
 # ==========================================
 # 🧠 INITIALIZATION & STATE MANAGEMENT
 # ==========================================
-if 'engine' not in st.session_state:
-    st.session_state.engine = MetricsEngine()
-    st.session_state.viz = Visualizer(st.session_state.engine)
-    st.session_state.reporter = ReportGenerator(st.session_state.engine)
-    st.session_state.detector = ChangeDetector(st.session_state.engine)
+@st.cache_resource
+def get_shared_resources():
+    """
+    Created ONCE per server process and shared by every browser tab.
+    (These used to live in st.session_state, which is per tab: every new tab
+    loaded the data again and started another background monitor.)
+    The agent's nodes already hold a MetricsEngine, so the app reuses it.
+    """
+    from src.agent import nodes
+    engine = nodes.engine
+    monitor = ProactiveMonitor(engine)
+    monitor.run_immediate_scan()   # alerts visible straight away
+    monitor.start()                # then every 5 minutes
+    return {
+        "engine": engine,
+        "viz": Visualizer(engine),
+        "reporter": ReportGenerator(engine),
+        "detector": ChangeDetector(engine),
+        "monitor": monitor,
+        "agent": build_roster_graph(),
+    }
+
+_shared = get_shared_resources()
+for _name, _obj in _shared.items():
+    st.session_state[_name] = _obj
+if 'messages' not in st.session_state:
     st.session_state.messages = []
-    # --- Bonus: Start Proactive Monitoring ---
-    st.session_state.monitor = ProactiveMonitor(st.session_state.engine)
-    st.session_state.monitor.start()
-    st.session_state.monitor.run_immediate_scan()
-    
-    # --- Agent Graph Initialization ---
-    st.session_state.agent = build_roster_graph()
 
 # --- Session Thread Management ---
 def get_all_sessions():
@@ -107,7 +122,15 @@ new_session_str = "+ Start New Session"
 session_options = [new_session_str] + available_sessions
 
 if 'session_id' not in st.session_state:
-    st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+    st.session_state.session_id = f"SES-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+# Snapshot the pipeline ONCE per session. "What changed since last session"
+# compares the live data with the snapshot of the previous session.
+# (Saving on every rerun made "last session" mean "a few seconds ago".)
+save_session_snapshot_once("stuck_ro_ids", st.session_state.engine.get_stuck_ro_ids(),
+                           st.session_state.session_id)
+save_session_snapshot_once("market_kpi_snapshot", st.session_state.engine.get_market_kpi_snapshot(),
+                           st.session_state.session_id)
 
 
 # ==========================================
@@ -120,7 +143,7 @@ with st.sidebar:
 
     # --- Option B: Always-visible New Session button + Session switcher ---
     if st.button("＋ New Session"):
-        st.session_state.session_id = f"SES-{datetime.now().strftime('%H%M%S')}"
+        st.session_state.session_id = f"SES-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         st.session_state.messages = []
         st.rerun()
 
@@ -178,7 +201,7 @@ with st.sidebar:
     
     # 2. Comparison-based Anomalies (Partner A logic)
     st.markdown("<p style='font-size:0.7rem;text-transform:uppercase;letter-spacing:1.5px;color:#718096;margin-bottom:8px;'>📊 Operational Diff</p>", unsafe_allow_html=True)
-    change_data = st.session_state.detector.detect_all_changes()
+    change_data = st.session_state.detector.detect_all_changes(st.session_state.session_id)
     
     # Handle New Anomalies
     if change_data["new_anomalies"]:
@@ -219,9 +242,11 @@ with st.sidebar:
             </div>
             """, unsafe_allow_html=True)
 
-    # 4. All Clear State
-    if not any([change_data["new_anomalies"], change_data["resolutions"], change_data["kpi_drift"]]):
-        st.success("System Healthy: No changes since last check.")
+    # 4. First session / no changes
+    if change_data.get("baseline"):
+        st.info("First session: today's state is saved as the baseline for next time.")
+    elif not any([change_data["new_anomalies"], change_data["resolutions"], change_data["kpi_drift"]]):
+        st.success("No changes since the last session.")
 
     st.divider()
 
@@ -280,10 +305,10 @@ for i, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"], unsafe_allow_html=True)
         if "fig" in msg and msg["fig"]:
-            st.plotly_chart(msg["fig"], use_container_width=True, key=f"hist_chart_{i}")
+            st.plotly_chart(msg["fig"], width="stretch", key=f"hist_chart_{i}")
 
 # Chat Input Logic
-if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies..."):
+if prompt := st.chat_input("Ask about stuck ROs, a state's success-rate trend (e.g. 'GA trend'), or why a market is failing..."):
     # 1. Add and display the User's message IMMEDIATELY
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -293,21 +318,43 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
     fig = None 
     
     p = prompt.lower()
-    # Special shortcuts for visualizations (stay for UX speed)
-    if "trend" in p or "scs" in p or "success rate" in p or "percent" in p or \
-       ("market" in p and "root cause" not in p and "why" not in p):
-        content = "Analyzing Market SCS_PERCENT trends..."
-        fig = st.session_state.viz.plot_market_trend("GA") 
-    elif "stuck" in p or "triage" in p or "bottleneck" in p or \
-         "stall" in p or "frozen" in p or "hung" in p or "blocked" in p or "pending" in p:
-        content = "Triaging active bottlenecks..."
+    engine = st.session_state.engine
+    asked_state = detect_state(prompt, engine.known_states())
+    # "why", "root cause", "search" etc. always go to the agent: they need
+    # reasoning and memory, not just a chart.
+    needs_agent = any(w in p for w in ("why", "root cause", "cause", "search", "regulation",
+                                       "cms", "compare", "retry", "retries", "explain", "remember",
+                                       "last time", "last session", "before"))
+    shortcut_used = True
+    # Fast chart shortcuts (no LLM call). They now carry a short finding
+    # computed from the data, not just a "working on it" line.
+    if not needs_agent and ("trend" in p or "scs" in p or "success rate" in p or "percent" in p or "market" in p):
+        market = asked_state or "NATIONAL"
+        trend = engine.get_market_trend_data(market)
+        fig = st.session_state.viz.plot_market_trend(market)
+        if trend.empty:
+            content = f"No monthly data for {market}."
+        else:
+            latest = trend.iloc[-1]
+            below = trend[trend["SCS_PERCENT"] < 95]
+            content = (f"**{market}** success rate: {latest['SCS_PERCENT']:.2f}% in {latest['MONTH']} "
+                       f"(12-month average {trend['SCS_PERCENT'].mean():.2f}%). "
+                       f"{len(below)} of {len(trend)} months were below the 95% SLA."
+                       + ("" if asked_state else " Name a state (e.g. 'GA trend') to see one market."))
+    elif not needs_agent and any(w in p for w in ("stuck", "triage", "stall", "frozen", "hung", "blocked", "pending")):
+        from src.memory.procedural import procedural_memory
+        triage = procedural_memory.run_procedure("triage_stuck_ros", engine)
+        content = f"Triage (procedure triage_stuck_ros v{triage['version']}): {triage['summary']}"
         fig = st.session_state.viz.plot_stuck_ro_tracker()
-    elif "anomal" in p or "slow" in p or "duration" in p or "delay" in p or "deviation" in p:
-        content = "Analyzing duration deviations..."
+    elif not needs_agent and any(w in p for w in ("anomal", "slow", "duration", "delay", "deviation", "bottleneck")):
+        from src.memory.procedural import procedural_memory
+        scan = procedural_memory.run_procedure("pipeline_bottleneck_scan", engine)
+        content = f"Bottleneck scan (procedure pipeline_bottleneck_scan v{scan['version']}): {scan['summary']}"
         fig = st.session_state.viz.plot_duration_anomaly()
-    elif "report" in p or "health" in p or "pipeline status" in p or "summary" in p:
+    elif not needs_agent and any(w in p for w in ("report", "pipeline status", "summary")):
         content = st.session_state.reporter.generate_pipeline_health_report()
     else:
+        shortcut_used = False
         # FULL AGENT GRAPH INVOCATION
         try:
             with st.spinner("Agent Reasoning..."):
@@ -317,19 +364,22 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
                 }
                 config = {"configurable": {"thread_id": st.session_state.session_id}}
                 result = st.session_state.agent.invoke(inputs, config)
-                content = result.get("final_answer", "I encountered an error processing your request.")
+                content = result.get("final_answer") or "I encountered an error processing your request."
         except Exception as e:
             content = f"⚠️ Agent error: {type(e).__name__}: {str(e)[:400]}"
+            shortcut_used = True  # the graph's memory writer never ran; log it here
 
-    # 3. Log the interaction to Episodic Memory
-    log_interaction(st.session_state.session_id, prompt, content)
+    # 3. Log to episodic memory. Agent turns are logged by the graph's
+    #    memory_writer node; logging them here too duplicated every turn.
+    if shortcut_used:
+        log_interaction(st.session_state.session_id, prompt, content)
 
     # 4. Display and Stream the Assistant Response (Task A6)
     with st.chat_message("assistant"):
         # This renders the "typing" effect live
         st.write_stream(stream_data(content))
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key=f"live_chart_{len(st.session_state.messages)}")
+            st.plotly_chart(fig, width="stretch", key=f"live_chart_{len(st.session_state.messages)}")
 
     # 5. Save the Agent's message to the session state
     agent_message = {"role": "assistant", "content": content}
@@ -340,10 +390,4 @@ if prompt := st.chat_input("Ask about stuck ROs, GA market trends, or anomalies.
     # 5. RERUN THE SCRIPT to ensure UI state consistency
     st.rerun()
 
-# --- Everything below this is outside the 'if prompt' block ---
-
-# ==========================================
-# 💾 AUTOMATED SNAPSHOT (Requirement A4)
-# ==========================================
-save_data_snapshot("stuck_ro_ids", st.session_state.engine.get_stuck_ro_ids())
-save_data_snapshot("market_kpi_snapshot", st.session_state.engine.get_market_kpi_snapshot())
+# (Snapshots are saved once per session near the top of this script.)

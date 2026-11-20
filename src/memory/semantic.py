@@ -2,7 +2,7 @@
 src/memory/semantic.py
 ======================
 Semantic Memory (Domain Knowledge Base)
-ChromaDB-backed store of 40+ healthcare roster pipeline knowledge items.
+ChromaDB-backed store of 42 healthcare roster pipeline knowledge items (10 categories).
 
 Usage:
     from src.memory.semantic import SemanticMemory
@@ -22,7 +22,7 @@ from chromadb.config import Settings
 from chromadb import EmbeddingFunction, Documents, Embeddings
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-CHROMADB_PATH = os.getenv("CHROMADB_PATH", "memory/chromadb")
+from src.paths import CHROMADB_PATH  # absolute, under ROSTERIQ_HOME
 COLLECTION_NAME = "semantic_knowledge"
 
 # ── Lightweight Hash Embedding (no model download needed) ─────────────────────
@@ -195,9 +195,9 @@ KNOWLEDGE_ITEMS: List[Dict[str, Any]] = [
         "id": "health_03",
         "text": (
             "Health flag Red means the pipeline stage has breached its SLA threshold. "
-            "Red flags require immediate investigation. Composite health score for an RO "
-            "is calculated as: count of Red flags across all 7 stage-health columns (range 0-7). "
-            "A score of 7 means every stage is in SLA breach."
+            "Red flags require immediate investigation. Each Red flag pulls an RO's composite "
+            "health score down: Red counts 0, Yellow 0.5 and Green 1, averaged over the 7 stages. "
+            "A score of 0.0 means every stage is in SLA breach."
         ),
         "metadata": {"category": "health_flags", "concept": "RED_FLAG"},
     },
@@ -219,8 +219,9 @@ KNOWLEDGE_ITEMS: List[Dict[str, Any]] = [
             "IS_STUCK = 1 means the RO has stalled at a pipeline stage without making "
             "forward progress. Stuck ROs can potentially recover — operator intervention "
             "or a reprocess trigger (RUN_NO++) can restart them. "
-            "Stuck ROs should be ranked by composite escalation score: "
-            "(Red flags × 3) + (Yellow flags × 1) + (days stuck × 2)."
+            "Stuck ROs should be ranked by the triage_stuck_ros escalation score: "
+            "(Red flags × red_weight) + (Yellow flags × yellow_weight) + (days stuck × time_weight); "
+            "the current procedure version uses weights 5, 1 and 2."
         ),
         "metadata": {"category": "operational_state", "concept": "IS_STUCK"},
     },
@@ -271,10 +272,11 @@ KNOWLEDGE_ITEMS: List[Dict[str, Any]] = [
     {
         "id": "metric_01",
         "text": (
-            "Composite Health Score = count of Red health flags across all 7 stage-health columns. "
-            "Range: 0 (all Green, healthy) to 7 (all Red, critical). "
-            "Thresholds: 0-1 = healthy, 2-3 = watch, 4-5 = warning, 6-7 = critical escalation. "
-            "Calculated as SQL: SUM(CASE WHEN col='Red' THEN 1 ELSE 0 END) for all _HEALTH cols."
+            "Composite Health Score = average over the 7 stage-health columns, scoring "
+            "Green = 1, Yellow = 0.5 and Red = 0. "
+            "Range: 1.0 (all Green, healthy) to 0.0 (all Red, critical); higher is healthier. "
+            "Example: 5 Green, 1 Yellow, 1 Red gives (5 + 0.5 + 0) / 7 = 0.79. "
+            "Calculated in the composite_health_view SQL view."
         ),
         "metadata": {"category": "derived_metric", "concept": "COMPOSITE_HEALTH_SCORE"},
     },
@@ -545,18 +547,21 @@ class SemanticMemory:
     # ── Seeding ───────────────────────────────────────────────────────────────
 
     def _seed_if_empty(self) -> None:
-        """Seeds all knowledge items on first run. Idempotent — checks by ID."""
-        existing_ids = set(self._collection.get(include=[])["ids"])
-        new_items = [ki for ki in KNOWLEDGE_ITEMS if ki["id"] not in existing_ids]
-        if not new_items:
+        """Seeds knowledge items on first run and refreshes any whose text changed. Idempotent."""
+        existing = self._collection.get(include=["documents"])
+        current = dict(zip(existing["ids"], existing["documents"]))
+        # Add missing items, and refresh items whose text was corrected in code
+        # (a plain "add if missing" would keep stale facts in old databases forever).
+        changed = [ki for ki in KNOWLEDGE_ITEMS if current.get(ki["id"]) != ki["text"]]
+        if not changed:
             return
 
-        self._collection.add(
-            ids=[ki["id"] for ki in new_items],
-            documents=[ki["text"] for ki in new_items],
-            metadatas=[ki["metadata"] for ki in new_items],
+        self._collection.upsert(
+            ids=[ki["id"] for ki in changed],
+            documents=[ki["text"] for ki in changed],
+            metadatas=[ki["metadata"] for ki in changed],
         )
-        print(f"[SemanticMemory] Seeded {len(new_items)} knowledge items.")
+        print(f"[SemanticMemory] Seeded/updated {len(changed)} knowledge items.")
 
     # ── Retrieval ─────────────────────────────────────────────────────────────
 

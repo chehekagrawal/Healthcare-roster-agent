@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from src.agent.state import RosterIQState
+from src.paths import THREADS_DB
 from src.agent.nodes import (
     memory_loader_node,
     supervisor_node,
@@ -51,7 +52,7 @@ def build_roster_graph():
     workflow.add_edge("memory_writer", END)
 
     # 4. Set up the SqliteSaver checkpointer for long-term thread state storage
-    conn = sqlite3.connect("roster_iq_threads.db", check_same_thread=False)
+    conn = sqlite3.connect(THREADS_DB, check_same_thread=False)
     memory = SqliteSaver(conn)
 
     # 5. Compile the graph

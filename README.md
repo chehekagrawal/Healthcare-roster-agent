@@ -14,11 +14,11 @@
 </a>
 
 <a href="https://streamlit.io">
-  <img src="https://img.shields.io/badge/Streamlit-1.32+-red?logo=streamlit" />
+  <img src="https://img.shields.io/badge/Streamlit-1.49+-red?logo=streamlit" />
 </a>
 
 <a href="https://duckdb.org">
-  <img src="https://img.shields.io/badge/DuckDB-0.10+-yellow" />
+  <img src="https://img.shields.io/badge/DuckDB-1.0+-yellow" />
 </a>
 
 <a href="LICENSE">
@@ -99,8 +99,6 @@ _**Visual Diagnostics**: Inline Plotly visualizations allow for deep-dive analys
 
 ## Architecture
 
-## Architecture
-
 ```mermaid
 graph TD
     User([User Query]) --> ML[Memory Loader]
@@ -155,18 +153,19 @@ _Triple-layer persistent memory system architecture ensuring cross-session intel
 ### 🗂️ Episodic Memory
 Stores and retrieves the history of every interaction.
 - **Backend:** SQLite (`roster_iq_memory.db`) + ChromaDB embeddings
-- **Behavior:** On session start, compares current pipeline state against last snapshot → surfaces what changed
+- **Behavior:** Each session saves one snapshot of stuck ROs and each market's latest-month SCS_PERCENT; the next session compares against it → surfaces what was resolved, what is newly stuck, and which markets drifted by 1+ point
 - **Example:** *"Last session you flagged 3 ROs stuck in DART_GEN in CA. 2 have resolved. 1 remains."*
 
 ### ⚙️ Procedural Memory
 Stores and executes named diagnostic workflows.
 - **Backend:** `procedures.json` (versioned) + ChromaDB for semantic lookup
 - **4 Procedures:** `triage_stuck_ros`, `market_health_report`, `retry_effectiveness_analysis`, `pipeline_bottleneck_scan`
+- **Executable:** each procedure runs real SQL (escalation scoring, market health with correlation, retry lift, bottleneck scan) and the agent runs the matching one for a question
 - **Improvable:** Users can update procedure parameters; the agent persists changes and bumps the version
 
 ### 🧬 Semantic Memory
-Domain knowledge base of 600+ facts about the healthcare pipeline.
-- **Backend:** ChromaDB
+Domain knowledge base of 42 hand-written facts (10 categories) about the healthcare pipeline, plus any regulatory findings saved from web searches.
+- **Backend:** ChromaDB, with a lightweight 256-dimension hashing embedder (no model download)
 - **Coverage:** Stage definitions, FILE_STATUS_CD meanings, health flag logic, LOB abbreviations, SCS threshold definitions, CSV correlation patterns
 - **Example:** Agent explains *why* it flagged an RO: *"DART_GEN_DURATION is 3× historical avg — typically indicates data volume spike or downstream validation bottleneck"*
 
@@ -234,11 +233,22 @@ python -m streamlit run app.py
 
 The app will open at `http://localhost:8501`.
 
-> **First run:** The semantic memory will initialize with 600+ domain facts — this takes ~20 seconds. Subsequent startups are instant.
+> **First run:** The semantic memory seeds its 42 domain facts into ChromaDB. Subsequent startups reuse them (and refresh any fact whose text changed in code).
+
+### Running the tests
+
+```bash
+python -m pytest            # 55 tests, ~10 seconds
+python -m pytest -m "not slow"   # skip the full Streamlit app test
+```
+
+Tests use a temporary folder for all memory databases (`ROSTERIQ_HOME`) and no API keys, so they never touch your real memory and make no network calls.
 
 ---
 
 ## Example Interactions
+
+> The examples below are illustrative of the interaction style; RO IDs and figures are examples, not output from the dataset.
 
 ### Pipeline Triage
 ```
@@ -303,7 +313,7 @@ Agent: [Web search: Tavily]
 
 ![State Failure Rate](assets/charts/chart_state_failure.png)
 
-**Key finding:** `GA` (5.0%), `CT` (5.4%), and `MD` (5.2%) are the top critical markets by failure rate. These three states account for a disproportionate share of `IS_FAILED=1` ROs and directly drive down their respective `SCS_PERCENT` scores in CSV 2.
+**Key finding:** Among states with meaningful volume, `CT` (5.4%), `MD` (5.2%) and `LA` (5.1%) have the highest failure rates, with `GA` close behind (5.0%). (`SC` shows 20%, but from only 5 files.)
 
 ---
 
@@ -312,7 +322,7 @@ Agent: [Web search: Tavily]
 
 ![Market SCS_PERCENT](assets/charts/chart_market_scs.png)
 
-**Key finding:** **18 of 31 markets** are currently below the 95% SLA threshold. `NM` (71%), `FL` (81.6%), and `GA` (82%) are the most critical — indicating systemic pipeline failures feeding through from CSV 1 into lagging market-level scores.
+**Key finding:** Averaged over 12 months, **20 of 32 markets** are below the 95% SLA threshold; in their latest month, 8 are. `NM` (71.0%), `FL` (81.7%) and `GA` (82.0%) have the lowest 12-month averages. For GA and FL the average is dragged down by a few very bad months (GA: Aug 2025 at 0.68%, Oct 2025 at 20%), while their latest months are above 95% — the root-cause tracer reports these breach months explicitly.
 
 ---
 
@@ -321,7 +331,7 @@ Agent: [Web search: Tavily]
 
 ![Duration Anomaly](assets/charts/chart_duration_anomaly.png)
 
-**Key finding:** `DART_GEN` is running at a median of **27.4× its historical average** — a severe anomaly. This is the primary bottleneck stage in the dataset and the root cause traced by RosterIQ when markets like GA and FL report below-SLA SCS_PERCENT scores.
+**Key finding:** The typical (median) DART generation run takes **1.49× its historical average** — below the 2× anomaly line — but the distribution has a long tail: 1 in 10 runs takes over 12× its average, which pulls the mean up to about 6.5×. The bottleneck scan finds the tail concentrated in AvailityPDM files (e.g. 2,784 slow DART generation runs in CA).
 
 ---
 
@@ -339,7 +349,7 @@ Healthcare-roster-agent/
 ├── data/                           # Operational CSV Datasets
 ├── assets/                         # Visuals & Charts
 ├── memory/                         # Vector database storage
-├── tests/                          # Automated tests
+├── tests/                          # pytest suite (55 tests)
 │
 ├── rosteriq_submission_report.pdf  # Final Documentation
 ├── requirements.txt
@@ -362,8 +372,10 @@ GOOGLE_API_KEY=AIzaSy...
 # Get your key at: https://app.tavily.com/
 TAVILY_API_KEY=tvly-...
 
-# Optional: Persistence path (defaults to ./persistence)
-CHROMADB_PATH=persistence/chroma_db
+# Optional: where memory databases are stored (defaults to the project folder)
+# ROSTERIQ_HOME=/path/to/runtime
+# Optional: ChromaDB folder (defaults to $ROSTERIQ_HOME/memory/chromadb)
+# CHROMADB_PATH=/path/to/chroma
 ```
 
 > **Never commit your `.env` file.** It is listed in `.gitignore`.

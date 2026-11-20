@@ -4,13 +4,16 @@ src/agent/nodes.py
 Agent graph nodes for RosterIQ.
 Contains both Engineer 1's Data Integration Nodes and Engineer 2's Memory Orchestration Nodes.
 """
-from typing import Dict, Any
+import json
+import re
+from typing import Dict, Any, List, Optional
+
 from src.agent.state import RosterIQState
 from dotenv import load_dotenv
 import os
 
 # Load environment variables (especially GOOGLE_API_KEY)
-load_dotenv() 
+load_dotenv()
 if not os.getenv("GOOGLE_API_KEY"):
     env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
     load_dotenv(dotenv_path=env_path)
@@ -18,19 +21,22 @@ if not os.getenv("GOOGLE_API_KEY"):
 # -----------------------------------------------------------------------------
 # Engineer 1 (Partner) - Data & Analytics Initialization
 # -----------------------------------------------------------------------------
-try:
-    from src.db.duckdb_engine import MetricsEngine
-    from src.tools.data_query import DataQueryTool
-    from src.tools.root_cause import RootCauseTracer
-    from src.tools.report_gen import ReportGenerator
+from src.db.duckdb_engine import MetricsEngine
+from src.tools.data_query import DataQueryTool
+from src.tools.root_cause import RootCauseTracer
+from src.tools.report_gen import ReportGenerator
+from src.tools.states import detect_state, STATE_NAMES
 
-    # Initialize backend engines
-    engine = MetricsEngine()
-    query_tool = DataQueryTool(engine)
-    tracer = RootCauseTracer(engine)
-    report_gen = ReportGenerator(engine)
-except ImportError as e:
-    print(f"Warning: Could not initialize reporting/query engines. Error: {e}")
+# Initialize backend engines
+engine = MetricsEngine()
+query_tool = DataQueryTool(engine)
+tracer = RootCauseTracer(engine)
+report_gen = ReportGenerator(engine)
+KNOWN_STATES = engine.known_states()
+
+# Most rows ever placed into a prompt from one table. Tools used to dump whole
+# tables (59,975 rows = 5.4 MB of JSON) into every prompt.
+MAX_PROMPT_ROWS = 15
 
 # --- Lazy LLM Getter (avoids caching None if key wasn't loaded at import time) ---
 _llm = None
@@ -59,6 +65,81 @@ def get_llm():
             print(f"Warning: Could not initialize LLM. Error: {e}")
     return _llm
 
+
+# =============================================================================
+# SHARED HELPERS
+# =============================================================================
+
+def latest_user_text(messages) -> str:
+    """
+    The most recent message the USER sent.
+    With checkpointing, `messages` holds the whole thread (old questions and
+    old answers), so messages[0] is the first question ever asked and
+    messages[-1] can be an agent reply. Walk back to the last human message.
+    """
+    for msg in reversed(messages or []):
+        role = getattr(msg, "type", None)
+        if role is None and isinstance(msg, (tuple, list)) and msg:
+            role = msg[0]
+        if role in ("human", "user"):
+            content = msg.content if hasattr(msg, "content") else msg[1]
+            return str(content)
+    return ""
+
+
+def has_word(text: str, *words: str) -> bool:
+    """Whole-word / whole-phrase match, case-insensitive."""
+    return any(re.search(rf"\b{re.escape(w)}\b", text, flags=re.IGNORECASE) for w in words)
+
+
+def df_to_prompt(df, max_rows: int = MAX_PROMPT_ROWS) -> str:
+    """A small, readable slice of a DataFrame for a prompt, with the true row count."""
+    if df is None or len(df) == 0:
+        return "(no rows)"
+    shown = df.head(max_rows)
+    text = shown.to_string(index=False, max_colwidth=40)
+    if len(df) > max_rows:
+        text += f"\n... ({len(df)} rows in total; first {max_rows} shown)"
+    return text
+
+
+def records_to_prompt(records: List[dict], max_rows: int = MAX_PROMPT_ROWS) -> str:
+    import pandas as pd
+    return df_to_prompt(pd.DataFrame(records), max_rows)
+
+
+def summarise_with_llm(prompt: str, data_summary: str) -> str:
+    """
+    Asks the LLM to write the answer. If the LLM is unavailable, the user still
+    gets the data findings instead of only an error message.
+    """
+    try:
+        from langchain_core.messages import HumanMessage
+        llm = get_llm()
+        if not llm:
+            raise ValueError("LLM not initialized (no GOOGLE_API_KEY).")
+        response = llm.invoke([HumanMessage(content=prompt)])
+        return response.content
+    except Exception as e:
+        if "429" in str(e) or "ResourceExhausted" in str(e):
+            reason = "⚠️ **Rate Limit Reached (429)**: the AI is at capacity, so this is the raw finding without an AI summary. Try again in 10-15 seconds for a written explanation."
+        else:
+            reason = f"⚠️ AI summary unavailable ({type(e).__name__}). Here is what the data shows:"
+        return f"{reason}\n\n{data_summary}"
+
+
+def memory_block(memory: Dict[str, Any]) -> str:
+    """Formats the loaded memory for a prompt."""
+    return (
+        f"- Recent conversation (this session): {memory.get('episodic', []) or 'none'}\n"
+        f"- Similar past investigations (any session): {memory.get('related_history', []) or 'none'}\n"
+        f"- Changes since the last session: {memory.get('change_summary', 'unknown')}\n"
+        f"- Procedures available: {memory.get('procedures_loaded', [])}\n"
+        f"- Domain knowledge (semantic memory): {memory.get('semantic', [])}\n"
+        f"- Active alerts: {memory.get('active_alerts', [])}"
+    )
+
+
 # =============================================================================
 # ENGINEER 2 - MEMORY & ORCHESTRATION NODES
 # =============================================================================
@@ -66,313 +147,324 @@ def get_llm():
 def memory_loader_node(state: RosterIQState) -> Dict[str, Any]:
     """
     Fetches episodic context + change diff + semantic KB hits; injects into state.
-    This fulfills the C4 Agent Memory Nodes requirement.
     """
-    # 1. Fetch episodic context (mocked until Episodic is fully integrated by Engineer 1)
+    session_id = state.get("session_id", "default_session")
+    query = latest_user_text(state.get("messages"))
+
+    # 1. Recent turns of THIS session (exact, from SQLite)
     try:
         from src.memory.episodic import get_history
-        session_id = state.get("session_id", "default_session")
-        # get_history returns formatted string, convert a brief summary list for the agent
         raw_history = get_history(session_id, limit=3)
         episodic_events = [{"context": raw_history}] if "No previous memory" not in raw_history else []
     except Exception as e:
         print(f"Warning: Episodic retrieval failed: {e}")
         episodic_events = []
-    
-    # 2. Fetch semantic KB hits based on latest message
+
+    # 2. Similar past investigations from ANY session (by meaning, from ChromaDB).
+    #    This is what answers "have we seen this before?" across sessions.
+    related_history = []
+    if query:
+        try:
+            from src.memory.episodic import retrieve_semantic_history
+            docs = retrieve_semantic_history(query, n_results=2)
+            related_history = [d[:400] for d in (docs[0] if docs else [])]
+        except Exception as e:
+            print(f"Warning: Semantic episodic retrieval failed: {e}")
+
+    # 3. Top semantic KB hits for the question
     semantic_hits = []
-    if state.get("messages"):
-        last_msg = state["messages"][-1]
-        query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
-        
+    if query:
         try:
             from src.memory.semantic import semantic_memory
-            # Retrieve the top 3 semantically relevant facts from ChromaDB
-            hits = semantic_memory.fetch(query, top_k=3)
-            # fetch() returns List[str] directly
-            if hits:
-                semantic_hits = hits
+            semantic_hits = semantic_memory.fetch(query, top_k=3) or []
         except Exception as e:
             print(f"Warning: Semantic retrieval failed: {e}")
-            
-    # 3. Change diff tracker (mocked for now, waiting on Engineer 1 integration)
+
+    # 4. What changed since the previous session
     try:
         from src.memory.change_detector import ChangeDetector
-        # We need the initialized engine; checking if it was imported successfully
-        if 'engine' in globals():
-            detector = ChangeDetector(engine)
-            changes = detector.detect_all_changes()
-            change_summary = f"Resolutions: {len(changes['resolutions'])}, New Anomalies: {len(changes['new_anomalies'])}, KPI Drifts: {len(changes['kpi_drift'])}"
-        else:
-            change_summary = "Engine not available for ChangeDetector."
+        changes = ChangeDetector(engine).detect_all_changes(session_id)
+        change_summary = (f"Resolved: {changes['resolutions'] or 'none'}; "
+                          f"newly stuck: {changes['new_anomalies'] or 'none'}; "
+                          f"success-rate drift (>=1 point): {changes['kpi_drift'] or 'none'}")
     except Exception as e:
         print(f"Warning: Change detection failed: {e}")
-        change_summary = "Change detection unvailable."
-    
-    # 4. Procedures loaded + versions
+        change_summary = "Change detection unavailable."
+
+    # 5. Procedures loaded + versions
     try:
         from src.memory.procedural import procedural_memory
-        procedures_loaded = []
-        for name, proc_data in procedural_memory.procedures.items():
-            version = proc_data.get("version", "1.0")
-            procedures_loaded.append(f"{name} (v{version})")
+        procedures_loaded = [f"{name} (v{p.get('version', 1)})"
+                             for name, p in procedural_memory.procedures.items()]
     except Exception:
         procedures_loaded = []
-        
-    # 5. FETCH PROACTIVE ALERTS (Bonus Challenge)
+
+    # 6. Proactive alerts (bonus challenge)
     try:
         from src.agent.monitor import get_active_alerts
-        active_alerts = get_active_alerts(limit=3)
-        alert_summary = [f"[{a['severity']}] {a['message']}" for a in active_alerts]
+        alert_summary = [f"[{a['severity']}] {a['message']}" for a in get_active_alerts(limit=3)]
     except Exception:
         alert_summary = []
-        
+
     return {
         "memory_context": {
             "episodic": episodic_events,
+            "related_history": related_history,
             "semantic": semantic_hits,
             "change_summary": change_summary,
             "procedures_loaded": procedures_loaded,
             "active_alerts": alert_summary
-        }
+        },
+        # Reset per-turn outputs so a previous turn's values never leak into this one.
+        "tool_outputs": [],
+        "procedure_context": None,
+        "final_answer": None,
     }
+
 
 def memory_writer_node(state: RosterIQState) -> Dict[str, Any]:
     """
-    Builds and logs `EpisodicEvent` after every agent turn.
-    Extracts the final answer and used tools to persist the agent's recent reasoning.
-    This fulfills the second half of C4: Agent Memory Nodes.
+    Logs the turn to episodic memory (SQLite event + interaction, and ChromaDB).
+    This is the ONLY place agent turns are logged; app.py logs only the
+    shortcut answers that never reach the graph.
     """
     if not state.get("final_answer"):
-        return {} # Nothing to log if no final action was taken
-        
-    session_id = state.get("session_id", "default_session")
-    
-    # In a full run, we would extract the specific user query from messages
-    user_intent = "Analyzed pipeline health" 
-    if state.get("messages") and len(state["messages"]) > 0:
-         msg = state["messages"][0]
-         raw_content = msg.content if hasattr(msg, "content") else str(msg)
-         raw_summary = str(raw_content)
-         user_intent = raw_summary[:100]
+        return {}
 
-    # Structure the episodic event
-    event = {
-        "session_id": session_id,
-        "intent": user_intent,
-        "tools_used": [t.get("name", "unknown") for t in state.get("tool_outputs", [])],
-        "final_output": state["final_answer"],
-        "procedures_run": state.get("procedure_context", None)
-    }
-    
-    # Note: Calling Engineer 1's SQLite/Chroma Episodic DB writer here
+    session_id = state.get("session_id", "default_session")
+    user_query = latest_user_text(state.get("messages")) or "Analyzed pipeline health"
+    tools_used = [t.get("name", "unknown") for t in state.get("tool_outputs", []) or []]
+    procedure = state.get("procedure_context")
+
     try:
         from src.memory.episodic import log_episodic_event, log_interaction
-        # 1. Log the structured diagnostic event
         log_episodic_event(
             session_id=session_id,
-            intent=user_intent,
+            intent=user_query[:200],
             findings=state["final_answer"],
-            kpis={"tools": event["tools_used"], "procedures": event["procedures_run"]},
-            severity="Low"
+            kpis={"tools": tools_used, "procedure": procedure},
+            severity="High" if any("alert" in t or "triage" in t for t in tools_used) else "Low",
         )
-        # 2. Log the general conversation interaction (for chat history retrieval)
         log_interaction(
             session_id=session_id,
-            user_query=user_intent,
-            agent_response=state["final_answer"]
+            user_query=user_query,
+            agent_response=state["final_answer"],
         )
+        print(f"[Memory Writer] Logged episodic event for session {session_id}")
     except Exception as e:
         print(f"Warning: Could not log persistence events: {e}")
 
-    print(f"[Memory Writer] Logged episodic event for session {session_id}")
-    
-    return {} # No direct state changes, just side object logging
+    return {}
+
+
+MARKET_WORDS = ("market", "markets", "scs", "scs_percent", "success rate", "trend", "trends",
+                "sla", "root cause", "search", "regulation", "regulations", "cms", "retry", "retries")
+PIPELINE_WORDS = ("stuck", "triage", "stall", "stalled", "blocked", "slow", "slowest", "anomaly",
+                  "anomalies", "bottleneck", "bottlenecks", "stage", "stages", "file", "files",
+                  "pipeline", "health", "duration", "delay", "ingestion")
+
+
+def keyword_route(query: str) -> str:
+    """
+    Fallback routing when the LLM is unavailable (whole words only).
+    Market words or a named state win; otherwise pipeline words, a bare "why"
+    (e.g. "why is GA low?" already has a state), or nothing at all go to the
+    pipeline specialist.
+    """
+    if has_word(query, *MARKET_WORDS) or detect_state(query, KNOWN_STATES):
+        return "market_analytics_node"
+    if has_word(query, "why") and not has_word(query, *PIPELINE_WORDS):
+        return "market_analytics_node"
+    return "pipeline_health_node"
+
 
 def supervisor_node(state: RosterIQState) -> Dict[str, Any]:
     """
-    Acts as the intelligent router.
-    Reads the latest user message and the memory context, then decides
-    whether to route execution to the 'pipeline_health_node' or 'market_analytics_node'.
-    Fulfills C4: Agent Memory Nodes orchestration requirement.
+    Intelligent router: decides whether the pipeline or the market specialist
+    answers. Falls back to keyword routing if the LLM is unavailable.
     """
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        from pydantic import BaseModel, Field
-    except ImportError:
-        print("Required packages not installed for supervisor node.")
-        return {"active_agent": "pipeline_health_node"} # Fallback
-
-    if not state.get("messages"):
+    query = latest_user_text(state.get("messages"))
+    if not query:
         return {"active_agent": "pipeline_health_node"}
 
-    last_msg = state["messages"][-1]
-    query = last_msg.content if hasattr(last_msg, "content") else str(last_msg)
+    prompt = f"""
+    Analyze the user query and decide which agent should handle it.
+    Return ONLY one of these two strings: 'pipeline_health_node' or 'market_analytics_node'.
 
-    # Define the structured output for the router
-    class RouterDecision(BaseModel):
-        next_agent: str = Field(
-            description="Must be 'pipeline_health_node' for system/file errors, or 'market_analytics_node' for SLA/Market/Trend questions."
-        )
+    Rules:
+    - Use 'pipeline_health_node' for queries about stuck files, pipeline stages, slow stages, file errors, or ingestion.
+    - Use 'market_analytics_node' for queries about a state or market, success rates (SCS_PERCENT), trends,
+      SLA breaches, retries, root cause analysis, or web searches about regulations.
 
-    # Initialize the LLM
+    User Query: {query}
+    """
     try:
         from langchain_core.messages import HumanMessage
-        
-        prompt = f"""
-        Analyze the user query and decide which agent should handle it.
-        Return ONLY one of these two strings: 'pipeline_health_node' or 'market_analytics_node'.
-        
-        Rules:
-        - Use 'pipeline_health_node' for queries about stuck files, pipeline stages, file errors, or ingestion.
-        - Use 'market_analytics_node' for queries about market trends, SCS_PERCENT, root cause analysis, or web searches.
-        
-        User Query: {query}
-        """
-        
         llm = get_llm()
-        if llm:
-            response = llm.invoke([HumanMessage(content=prompt)])
-            text = response.content.lower().strip()
-        else:
+        if not llm:
             raise ValueError("LLM not initialized.")
-        
-        if "market_analytics_node" in text:
-            next_agent = "market_analytics_node"
-        else:
-            next_agent = "pipeline_health_node"
-             
+        text = llm.invoke([HumanMessage(content=prompt)]).content.lower().strip()
+        next_agent = "market_analytics_node" if "market_analytics_node" in text else "pipeline_health_node"
         print(f"[Supervisor] Routing query to: {next_agent}")
-        return {"active_agent": next_agent}
-
     except Exception as e:
-        print(f"[Supervisor] Routing failed, using keyword fallback. Error: {e}")
-        # Keyword fallback
-        market_keywords = ["market", "scs", "trend", "search", "root cause", "ga", "ca", "ny", "tx"]
-        if any(kw in query.lower() for kw in market_keywords):
-            next_agent = "market_analytics_node"
-        else:
-            next_agent = "pipeline_health_node"
-        return {"active_agent": next_agent}
+        next_agent = keyword_route(query)
+        print(f"[Supervisor] LLM routing unavailable ({type(e).__name__}); keyword route -> {next_agent}")
+    return {"active_agent": next_agent}
 
 
 # =============================================================================
 # ENGINEER 1 - DATA ANALYTICS & REPORTING NODES
 # =============================================================================
 
+def _run_procedure(name: str, overrides: Optional[dict] = None) -> dict:
+    from src.memory.procedural import procedural_memory
+    return procedural_memory.run_procedure(name, engine, overrides)
+
+
 def pipeline_health_node(state: RosterIQState) -> Dict[str, Any]:
     """
-    Pipeline Health Agent Node.
-    Analyzes stuck files, health scores, and duration anomalies.
-    Summarizes findings using LLM for a natural language experience.
+    Pipeline Health Agent Node: stuck files, slow stages and file health.
+    Runs the matching procedure from procedural memory where one exists.
     """
-    query = state["messages"][-1].content
+    query = latest_user_text(state.get("messages"))
     memory = state.get("memory_context", {})
-    
-    # 1. Retrieve Data Context
-    if "stuck" in query.lower():
-        data = query_tool.derive_metrics("stuck_duration")
-        data_context = f"Current stuck files: {data.to_json()}"
-    elif "anomaly" in query.lower() or "slow" in query.lower():
-        data = query_tool.detect_anomalies()
-        data_context = f"Duration anomalies: {data.to_json()}"
-    else:
-        data = query_tool.derive_metrics("health")
-        data_context = f"Pipeline health scores: {data.to_json()}"
-    
-    # 2. Construct LLM Summary Prompt
-    prompt = f"""
-    Internal Data Engine Result: {data_context}
-    
-    Memory Context:
-    - Procedural Memory (Rules): {memory.get('procedures_loaded', [])}
-    - Semantic Knowledge: {memory.get('semantic', [])}
-    - Active Alerts: {memory.get('active_alerts', [])}
-    
-    User Query: {query}
-    
-    Instruction: Provide a professional natural language summary of the data. 
-    Explain what's happening. DO NOT return raw JSON. 
-    If referencing rules or alerts from memory, explain their relevance.
-    """
-    
-    try:
-        from langchain_core.messages import HumanMessage
-        llm = get_llm()
-        if llm:
-            response = llm.invoke([HumanMessage(content=prompt)])
-            answer = response.content
-        else:
-            raise ValueError("LLM not initialized correctly.")
-    except Exception as e:
-        if "429" in str(e) or "ResourceExhausted" in str(e):
-             answer = "⚠️ **Rate Limit Reached (429)**: The AI is a bit overwhelmed right now. Please wait about 10-15 seconds and try again. If this persists, upgrading the API key is recommended."
-        else:
-             answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM encountered an issue. Error: {type(e).__name__}: {str(e)[:200]}"
+    target_state = detect_state(query, KNOWN_STATES)
+    procedure = None
 
+    if has_word(query, "stuck", "triage", "stall", "stalled", "blocked", "escalate", "escalation"):
+        result = _run_procedure("triage_stuck_ros", {"state_filter": target_state})
+        procedure = "triage_stuck_ros"
+        data_summary = (f"Procedure triage_stuck_ros v{result['version']} "
+                        f"(weights {result['used_params']}): {result['summary']}\n"
+                        f"{records_to_prompt(result['data'])}")
+        tool_name = "procedure:triage_stuck_ros"
+
+    elif has_word(query, "slow", "slowest", "anomaly", "anomalies", "bottleneck", "bottlenecks",
+                  "delay", "delays", "duration", "deviation"):
+        result = _run_procedure("pipeline_bottleneck_scan")
+        procedure = "pipeline_bottleneck_scan"
+        anomalies = query_tool.detect_anomalies()
+        data_summary = (f"{len(anomalies)} file runs have at least one stage above 2x its historical average.\n"
+                        f"Procedure pipeline_bottleneck_scan v{result['version']}: {result['summary']}\n"
+                        f"{records_to_prompt(result['data'], 10)}")
+        tool_name = "procedure:pipeline_bottleneck_scan"
+
+    else:
+        health = query_tool.derive_metrics("health", state=target_state)
+        scope = target_state or "all states"
+        by_state = (health.groupby("CNT_STATE")["composite_health_score"]
+                    .agg(["mean", "count"]).sort_values("mean").head(10).round(3))
+        worst = health.nsmallest(5, "composite_health_score")
+        data_summary = (f"Composite health score (1.0 = all stages green, 0.0 = all red) for {scope}: "
+                        f"average {health['composite_health_score'].mean():.3f} over {len(health)} file runs.\n"
+                        f"Least healthy states:\n{df_to_prompt(by_state.reset_index())}\n"
+                        f"Least healthy file runs:\n{df_to_prompt(worst)}")
+        tool_name = "derive_metrics:health"
+
+    prompt = f"""
+    Data findings (computed with SQL; treat these numbers as the source of truth):
+    {data_summary}
+
+    Memory context:
+    {memory_block(memory)}
+
+    User Query: {query}
+
+    Instruction: Answer professionally in plain language using ONLY the findings and memory above.
+    Explain what is happening and what to do next. Do not invent numbers. Do not return raw JSON.
+    If an alert, a past investigation or a change since last session is relevant, mention it.
+    """
+    answer = summarise_with_llm(prompt, data_summary)
     return {
-        "messages": [("system", answer)],
-        "final_answer": answer
+        "messages": [("assistant", answer)],
+        "final_answer": answer,
+        "tool_outputs": [{"name": tool_name}],
+        "procedure_context": procedure,
     }
+
 
 def market_analytics_node(state: RosterIQState) -> Dict[str, Any]:
     """
-    Market Analytics Agent Node.
-    Handles cross-table joins, root cause tracing, and web searches.
-    Summarizes complex analytics for the user.
+    Market Analytics Agent Node: state success rates, root causes, retries and
+    web research.
     """
-    query = state["messages"][-1].content
+    query = latest_user_text(state.get("messages"))
     memory = state.get("memory_context", {})
-    
-    states = ["GA", "NY", "TX", "CA", "FL", "NH"]
-    target_state = next((s for s in states if s in query.upper()), "NATIONAL")
+    target_state = detect_state(query, KNOWN_STATES)
+    procedure = None
 
-    # 1. Retrieve Analysis Context
-    if "root cause" in query.lower() or "why" in query.lower():
+    if has_word(query, "root cause", "why", "cause", "reason", "explain why"):
+        note = ""
+        if not target_state:
+            # No state named: investigate the market with the worst 12-month average.
+            worst = engine.query("SELECT CNT_STATE FROM cross_state_health_view ORDER BY avg_scs_percent LIMIT 1")
+            target_state = worst.iloc[0]["CNT_STATE"]
+            note = f"(No state was named, so the market with the lowest 12-month average, {target_state}, was traced.) "
         analysis = tracer.trace_market_failure(target_state)
-        data_context = f"Root Cause Analysis for {target_state}: {analysis['narrative']}"
-    elif "search" in query.lower() or "what is" in query.lower() or "explanation" in query.lower():
+        data_summary = note + f"Root cause trace for {target_state}: {analysis['narrative']}"
+        if analysis.get("breach_months"):
+            data_summary += f"\nMonths below 95%: {analysis['breach_months']}"
+        tool_name = "root_cause_tracer"
+
+    elif has_word(query, "search", "regulation", "regulations", "cms", "rule", "rules", "policy", "news"):
         from src.tools.web_search import web_search
-        results = web_search.search(query)
-        data_context = f"Web Research Findings: {results}"
+        context_type = web_search.pick_context_type(query)
+        subject = STATE_NAMES.get(target_state, target_state) if target_state else query
+        results = web_search.search(subject if context_type != "general" else query, context_type)
+        stored = web_search.enrich_semantic_kb(results)
+        hits = results.get("results", [])
+        if "error" in results:
+            data_summary = f"Web search unavailable: {results['error']}"
+        else:
+            data_summary = (f"Web search ({context_type}) for '{results.get('query_used')}':\n" +
+                            "\n".join(f"- {h.get('title')} ({h.get('url')}): {str(h.get('content'))[:300]}"
+                                      for h in hits) +
+                            ("\n(Findings saved to semantic memory for future questions.)" if stored else ""))
+        tool_name = f"web_search:{context_type}"
+
+    elif has_word(query, "retry", "retries", "reprocess", "reprocessing", "rerun"):
+        result = _run_procedure("retry_effectiveness_analysis", {"state_filter": target_state})
+        procedure = "retry_effectiveness_analysis"
+        data_summary = (f"Procedure retry_effectiveness_analysis v{result['version']}: {result['summary']}\n"
+                        f"{records_to_prompt(result['data'], 10)}")
+        tool_name = "procedure:retry_effectiveness_analysis"
+
+    elif target_state:
+        joined = query_tool.cross_table_join(target_state)
+        trend = engine.get_market_trend_data(target_state)[["MONTH", "SCS_PERCENT"]]
+        data_summary = (f"Market {target_state}: files vs success rate (latest month and 12-month figures):\n"
+                        f"{df_to_prompt(joined)}\nMonthly SCS_PERCENT, oldest first:\n{df_to_prompt(trend, 12)}")
+        tool_name = "cross_table_join"
+
     else:
-        data = query_tool.cross_table_join(target_state)
-        data_context = f"Market Correlation Data for {target_state}: {data.to_json()}"
+        result = _run_procedure("market_health_report")
+        procedure = "market_health_report"
+        data_summary = (f"Procedure market_health_report v{result['version']}: {result['summary']}\n"
+                        f"Markets below the 95% SLA (latest month or 12-month average):\n"
+                        f"{records_to_prompt(result['data'])}")
+        tool_name = "procedure:market_health_report"
 
-    # 2. Summarize with Knowledge Base Context
     prompt = f"""
-    Analytical Findings: {data_context}
-    
-    Procedural Knowledge (Workflows): {memory.get('procedures_loaded', [])}
-    Knowledge Base (Semantic): {memory.get('semantic', [])}
-    Active Anomalies: {memory.get('active_alerts', [])}
-    
-    User Query: {query}
-    
-    Instruction: Answer the user's query professionally. If they are asking for an EXPLANATION 
-    of a stage (like DART) or a rule, use the Procedural Knowledge provided. 
-    Summarize any data findings naturally. DO NOT show raw JSON.
-    """
-    
-    try:
-        from langchain_core.messages import HumanMessage
-        llm = get_llm()
-        if llm:
-            response = llm.invoke([HumanMessage(content=prompt)])
-            answer = response.content
-        else:
-            raise ValueError("LLM not initialized correctly.")
-    except Exception as e:
-        if "429" in str(e) or "ResourceExhausted" in str(e):
-             answer = "⚠️ **Rate Limit Reached (429)**: The AI is currently at its capacity. Please wait a few seconds before asking your next question. This is a common limit on the free tier."
-        else:
-             answer = f"⚠️ Could not generate an AI summary. Raw data was retrieved but the LLM had an error. Error: {type(e).__name__}: {str(e)[:200]}"
+    Analytical findings (computed with SQL or retrieved from the web; treat as the source of truth):
+    {data_summary}
 
-        
+    Memory context:
+    {memory_block(memory)}
+
+    User Query: {query}
+
+    Instruction: Answer professionally in plain language using ONLY the findings and memory above.
+    Distinguish the latest month from the 12-month average when both are given.
+    Do not invent numbers. Do not return raw JSON.
+    """
+    answer = summarise_with_llm(prompt, data_summary)
     return {
-        "messages": [("system", answer)],
-        "final_answer": answer
+        "messages": [("assistant", answer)],
+        "final_answer": answer,
+        "tool_outputs": [{"name": tool_name}],
+        "procedure_context": procedure,
     }
+
 
 def report_node(state):
     """
@@ -382,6 +474,6 @@ def report_node(state):
     report = report_gen.generate_pipeline_health_report()
     answer = f"Generated Operational Report:\n{report}"
     return {
-        "messages": [("system", answer)],
+        "messages": [("assistant", answer)],
         "final_answer": answer
     }

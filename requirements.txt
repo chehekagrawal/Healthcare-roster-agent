@@ -8,42 +8,31 @@ langgraph>=0.2.27
 langchain>=0.2.16
 langchain-core>=0.2.40
 langchain-google-genai>=1.0.10
-langchain-community>=0.2.17
 langgraph-checkpoint-sqlite>=2.0.0
 
-# ── LLM ──────────────────────────────────────────────────────
-google-generativeai>=0.7.2
-
 # ── Memory Layer ──────────────────────────────────────────────
-chromadb>=0.5.3           # Semantic + Episodic vector store
-langmem==0.0.19           # LangMem SDK (episodic/procedural/semantic)
+chromadb>=0.5.3           # Semantic, episodic and procedure vector stores
 
 # ── Data Layer ────────────────────────────────────────────────
-duckdb>=0.10.1            # In-process SQL analytics on CSVs
+duckdb>=1.0.0             # In-process SQL analytics on CSVs
 pandas>=2.2.1
 
 # ── Visualization ─────────────────────────────────────────────
 plotly>=5.19.0
 
-# ── Utilities & UI ──
-streamlit>=1.32.0
-apscheduler>=3.10.4
-python-dotenv>=1.0.1
-pydantic>=2.7.4
-fpdf2>=2.7.8
-
-
-# ── Web Search ───────────────────────────────────
-# ── Web Search ────────────────────────────────────────────────
-tavily-python>=0.3.3
-
 # ── Frontend ──────────────────────────────────────────────────
-streamlit>=1.32.0
+streamlit>=1.49.0         # uses st.plotly_chart(width="stretch")
 
 # ── Monitoring ────────────────────────────────────────────────
 apscheduler>=3.10.4
+
+# ── Web Search ────────────────────────────────────────────────
+tavily-python>=0.3.3
 
 # ── Utilities ─────────────────────────────────────────────────
 python-dotenv>=1.0.1
 pydantic>=2.7.4
 fpdf2>=2.7.9
+
+# ── Tests ─────────────────────────────────────────────────────
+pytest>=8.0

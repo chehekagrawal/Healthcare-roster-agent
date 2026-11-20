@@ -40,16 +40,20 @@ class Visualizer:
             return None
 
         # Create the base line chart
+        # x = real dates (MONTH_DATE), so months are in calendar order.
+        # (Plotting the "MM-YYYY" text put January 2026 before February 2025.)
+        # Straight segments, not a spline: a spline overshoots between months
+        # and can draw values that never happened (e.g. below 0%).
         fig = px.line(
             market_df,
-            x="MONTH",
+            x="MONTH_DATE",
             y="SCS_PERCENT",
             title=f"Market Transaction Success Trend — {market_code.upper()}",
             markers=True,
-            labels={"SCS_PERCENT": "Success Rate (%)", "MONTH": "Month"},
-            line_shape='spline', # Smoother professional look
+            labels={"SCS_PERCENT": "Success Rate (%)", "MONTH_DATE": "Month"},
             render_mode='svg'
         )
+        fig.update_xaxes(tickformat="%b %Y", dtick="M1")
 
         # 95% threshold — strictly required per problem statement visualization spec
         fig.add_hline(
@@ -79,7 +83,7 @@ class Visualizer:
         Renders the top 20 riskiest ROs based on Red flag count.
         """
         # Query the full dataset via DuckDB
-        df_pipeline = self.engine.query("SELECT * FROM roster_ops")
+        df_pipeline = self.engine.query("SELECT * FROM roster")
         
         health_cols = [
             "PRE_PROCESSING_HEALTH",
@@ -159,11 +163,12 @@ class Visualizer:
         # Fetching pre-calculated deviations from our DuckDB view
         df_deviation = self.engine.query("SELECT * FROM duration_deviation_view")
         
-        # Calculate means for the summary bar chart
+        # Median, not mean: a handful of files at 100x+ dragged the mean of
+        # DART generation to ~6.5x while the typical file runs at ~1.5x.
         summary_data = [
-            {"Stage": "DART GEN", "Ratio": df_deviation["dart_deviation"].mean()},
-            {"Stage": "DART UI", "Ratio": df_deviation["dart_ui_deviation"].mean()},
-            {"Stage": "SPS LOAD", "Ratio": df_deviation["sps_deviation"].mean()}
+            {"Stage": "DART GEN", "Ratio": df_deviation["dart_deviation"].median()},
+            {"Stage": "DART UI", "Ratio": df_deviation["dart_ui_deviation"].median()},
+            {"Stage": "SPS LOAD", "Ratio": df_deviation["sps_deviation"].median()}
         ]
         
         df_plot = pd.DataFrame(summary_data)
@@ -182,8 +187,8 @@ class Visualizer:
             y="Ratio",
             color="Status",
             color_discrete_map=color_map,
-            title=f"Duration Anomaly Chart (>{anomaly_threshold}x = Anomaly)",
-            labels={"Ratio": "Deviation Ratio (Actual/Avg)"}
+            title=f"Typical (median) Duration vs Historical Average (>{anomaly_threshold}x = Anomaly)",
+            labels={"Ratio": "Median Deviation Ratio (Actual/Avg)"}
         )
         
         # Horizontal lines to visually indicate the danger zones
@@ -207,7 +212,7 @@ class Visualizer:
         Grouped bar chart showing recovery of successful transactions.
         Compares First Pass Success vs. Final Success after Reprocessing.
         """
-        df_market = self.engine.query("SELECT * FROM market_ops")
+        df_market = self.engine.query("SELECT * FROM market")
         
         # Aggregating by market to show total volume recovery
         df_agg = (
@@ -257,19 +262,15 @@ class Visualizer:
         ULTRA-UPGRADED: Horizontal bar chart with sophisticated 'Sunset Heat' palette.
         Signals urgency without the eye-strain of bright yellow.
         """
-        df_pipeline = self.engine.query("SELECT * FROM roster_ops")
-        health_cols = [c for c in df_pipeline.columns if c.endswith("_HEALTH")]
-        
-        stuck = df_pipeline[df_pipeline["IS_STUCK"] == 1].copy()
+        # Same escalation score as the triage_stuck_ros procedure (one source of
+        # truth for the weights; the chart used to hard-code different ones).
+        from src.memory.procedural import procedural_memory
+        stuck = pd.DataFrame(procedural_memory.run_procedure(
+            "triage_stuck_ros", self.engine, {"limit": 15})["data"])
         if stuck.empty:
             return None
-
-        # Logic: Weighted scoring to differentiate severity
-        stuck["RED_FLAGS"] = (stuck[health_cols] == "Red").sum(axis=1)
-        stuck["YELLOW_FLAGS"] = (stuck[health_cols] == "Yellow").sum(axis=1)
-        stuck["COMPOSITE_SCORE"] = (stuck["RED_FLAGS"] * 5) + (stuck["YELLOW_FLAGS"] * 2) + 1
-        
-        stuck = stuck.sort_values("COMPOSITE_SCORE", ascending=True).tail(15)
+        stuck = stuck.rename(columns={"escalation_score": "COMPOSITE_SCORE"})
+        stuck = stuck.sort_values("COMPOSITE_SCORE", ascending=True)
 
         # Pro-Typography: Using HTML spans for subtle state/org info
         label = stuck.apply(
@@ -297,7 +298,10 @@ class Visualizer:
             textposition='inside',
             insidetextanchor='start',
             textfont=dict(color='white', size=11, family="Inter"),
-            hovertemplate="<b>Escalation Score:</b> %{x}<br><b>Current Stage:</b> %{text}<extra></extra>",
+            customdata=stuck[["red_flags", "yellow_flags", "days_stuck"]].values,
+            hovertemplate=("<b>Escalation Score:</b> %{x}<br><b>Current Stage:</b> %{text}"
+                           "<br>Red flags: %{customdata[0]} · Yellow: %{customdata[1]}"
+                           " · Days stuck: %{customdata[2]}<extra></extra>"),
         ))
         
         fig.update_layout(
