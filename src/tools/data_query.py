@@ -1,83 +1,93 @@
-import os
-import json
+from typing import Optional
+
 import pandas as pd
 from dotenv import load_dotenv
-from langchain_community.tools.tavily_search import TavilySearchResults
 from src.db.duckdb_engine import MetricsEngine
 
 # Load environment variables
 load_dotenv()
 
-# -------------------------------------------------
-# 🌐 WEB SEARCH TOOL (Requirement A5/Web Integration)
-# -------------------------------------------------
-def get_web_search_tool():
-    """
-    Returns the Tavily search tool for external context.
-    """
-    if not os.getenv("TAVILY_API_KEY"):
-        print("WARNING: TAVILY_API_KEY not found!")
-    return TavilySearchResults(max_results=3)
+HEALTH_COLS = [
+    "PRE_PROCESSING_HEALTH",
+    "MAPPING_APROVAL_HEALTH",
+    "ISF_GEN_HEALTH",
+    "DART_GEN_HEALTH",
+    "DART_REVIEW_HEALTH",
+    "DART_UI_VALIDATION_HEALTH",
+    "SPS_LOAD_HEALTH",
+]
+
+_RED_COUNT = " + ".join(f"(CASE WHEN {c} = 'Red' THEN 1 ELSE 0 END)" for c in HEALTH_COLS)
+_YELLOW_COUNT = " + ".join(f"(CASE WHEN {c} = 'Yellow' THEN 1 ELSE 0 END)" for c in HEALTH_COLS)
 
 
 # -------------------------------------------------
-# 📊 DATA QUERY TOOL (Requirement A2/A5 Upgrade)
+# 📊 DATA QUERY TOOL
 # -------------------------------------------------
 class DataQueryTool:
     """
-    Task A2: Data Query & Metric Derivation.
+    Data Query & Metric Derivation.
     Uses DuckDB (MetricsEngine) to compute operational KPIs and detect anomalies.
+    All user-influenced values (like a state code) are passed as bound
+    parameters, never formatted into SQL text.
     """
     def __init__(self, metrics_engine: MetricsEngine):
         self.engine = metrics_engine
 
-    # Execute validated SQL
     def query_duckdb(self, sql_query: str):
-        """Executes SQL against the roster and market views."""
+        """Executes a read-only SQL query (SELECT / WITH only)."""
+        first_word = sql_query.strip().split(None, 1)[0].upper() if sql_query.strip() else ""
+        if first_word not in ("SELECT", "WITH"):
+            return "SQL Error: only read-only SELECT queries are allowed."
         try:
             return self.engine.query(sql_query)
         except Exception as e:
             return f"SQL Error: {str(e)}"
 
-    # Upgrade: derive_metrics
-    def derive_metrics(self, metric_type: str, filters: str = ""):
+    def derive_metrics(self, metric_type: str, state: Optional[str] = None):
         """
-        Computes the 5 specific metrics requested in Task A2.
-        Uses the analytical views created in Task A1.2 (schema.sql).
+        Computes the derived metrics. `state` optionally limits the result
+        to one state code.
         """
-        where_clause = f"WHERE {filters}" if filters else ""
+        state_sql = "AND CNT_STATE = ?" if state else ""
+        params = [state.upper()] if state else None
 
         if metric_type == "health":
-            # composite_health_score: Red flag count across 7 stages
-            return self.engine.query(f"SELECT * FROM composite_health_view {where_clause}")
+            # composite_health_score: 0.0 (all Red) .. 1.0 (all Green)
+            return self.engine.query(
+                f"SELECT * FROM composite_health_view WHERE TRUE {state_sql}", params)
 
         elif metric_type == "deviation":
-            # duration_deviation: actual / AVG_stage_DURATION
-            return self.engine.query(f"SELECT * FROM duration_deviation_view {where_clause}")
+            # duration deviation: actual / historical average per stage
+            if state:
+                return self.engine.query("""
+                    SELECT d.* FROM duration_deviation_view d
+                    JOIN (SELECT DISTINCT RO_ID FROM roster WHERE CNT_STATE = ?) r USING (RO_ID)
+                """, params)
+            return self.engine.query("SELECT * FROM duration_deviation_view")
 
         elif metric_type == "retry":
             # retry_indicator: RUN_NO > 1 with still-failing status
             return self.engine.query(f"""
-                SELECT RO_ID, RUN_NO, LATEST_STAGE_NM, FAILURE_STATUS 
-                FROM roster_ops 
-                WHERE RUN_NO > 1 AND IS_FAILED = 1 
-                {filters.replace('WHERE', 'AND') if filters else ''}
-            """)
+                SELECT RO_ID, RUN_NO, LATEST_STAGE_NM, FAILURE_STATUS
+                FROM roster
+                WHERE RUN_NO > 1 AND IS_FAILED = 1 {state_sql}
+            """, params)
 
         elif metric_type == "completion":
-            # pipeline_completion_rate: % of files at status 99
+            # pipeline_completion_rate: % of files at status 99 (resolved)
             return self.engine.query(f"""
-                SELECT 
-                    CNT_STATE, 
+                SELECT
+                    CNT_STATE,
                     COUNT(*) FILTER (WHERE FILE_STATUS_CD = 99) * 1.0 / COUNT(*) AS completion_rate
-                FROM roster_ops 
-                {where_clause}
+                FROM roster
+                WHERE TRUE {state_sql}
                 GROUP BY CNT_STATE ORDER BY completion_rate DESC
-            """)
+            """, params)
 
         elif metric_type == "stuck_duration":
             return self.engine.query(f"""
-                SELECT 
+                SELECT
                     RO_ID,
                     ORG_NM,
                     CNT_STATE,
@@ -86,50 +96,73 @@ class DataQueryTool:
                         CAST(LATEST_OBJECT_RUN_DT AS TIMESTAMP),
                         CAST(current_timestamp AS TIMESTAMP)
                     ) as minutes_stuck
-                FROM roster_ops 
-                WHERE IS_STUCK = 1
-                {filters.replace('WHERE', 'AND') if filters else ''}
-            """)
+                FROM roster
+                WHERE IS_STUCK = 1 {state_sql}
+            """, params)
 
         return None
 
-    # Detect_anomalies
     def detect_anomalies(self, threshold_multiplier: float = 2.0):
         """
-        Flags ROs where actual duration > N × AVG.
+        Flags ROs where actual duration > N × historical average.
         N=2 is anomaly, N=3 is critical.
         """
-        return self.engine.query(f"""
-            SELECT * FROM duration_deviation_view 
-            WHERE dart_deviation > {threshold_multiplier} 
-               OR dart_ui_deviation > {threshold_multiplier} 
-               OR sps_deviation > {threshold_multiplier}
-        """)
+        t = float(threshold_multiplier)
+        return self.engine.query("""
+            SELECT * FROM duration_deviation_view
+            WHERE dart_deviation > ?
+               OR dart_ui_deviation > ?
+               OR sps_deviation > ?
+        """, [t, t, t])
 
-    # Upgrade: cross_table_join
     def cross_table_join(self, state: str):
         """
-        Correlates CSV1 health signals with CSV2 SCS_PERCENT.
+        Correlates CSV1 health signals with CSV2 SCS_PERCENT for one state
+        (one row: latest-month rate plus 12-month average and minimum).
         """
-        return self.engine.query(f"""
-            SELECT * FROM cross_state_health_view 
-            WHERE CNT_STATE = '{state.upper()}'
-        """)
+        return self.engine.query(
+            "SELECT * FROM cross_state_health_view WHERE CNT_STATE = ?", [state.upper()])
+
+    def national_summary(self):
+        """All states, worst latest-month success rate first."""
+        return self.engine.market_pipeline_correlation()
+
 
 # -------------------------------------------------
-# Triage Stuck ROs (DuckDB Version)
+# Triage Stuck ROs — the single implementation of the escalation score
 # -------------------------------------------------
+def triage_stuck_ros(engine: MetricsEngine, red_weight: float = 5, yellow_weight: float = 1,
+                     time_weight: float = 2, state: Optional[str] = None, limit: int = 10) -> pd.DataFrame:
+    """
+    Ranks stuck ROs by escalation score:
+        red flags × red_weight + yellow flags × yellow_weight + days stuck × time_weight
+    Days stuck are measured to the dataset's as-of time (see MetricsEngine.as_of).
+    Used by the `triage_stuck_ros` procedure and the stuck-RO chart, so both
+    always agree.
+    """
+    params = [float(red_weight), float(yellow_weight), float(time_weight), engine.as_of, int(limit)]
+    if state:
+        params.append(state.upper())
+    return engine.query(f"""
+        WITH s AS (
+            SELECT
+                RO_ID, ORG_NM, CNT_STATE, LOB, LATEST_STAGE_NM,
+                ({_RED_COUNT}) AS red_flags,
+                ({_YELLOW_COUNT}) AS yellow_flags,
+                GREATEST(date_diff('day', CAST(LATEST_OBJECT_RUN_DT AS TIMESTAMP),
+                                   CAST($4 AS TIMESTAMP)), 0) AS days_stuck
+            FROM roster
+            WHERE IS_STUCK = 1
+        )
+        SELECT *,
+               red_flags * $1 + yellow_flags * $2 + days_stuck * $3 AS escalation_score
+        FROM s
+        WHERE TRUE {'AND CNT_STATE = $6' if state else ''}
+        ORDER BY escalation_score DESC
+        LIMIT $5
+    """, params)
+
+
 def triage_stuck_ros_v2(engine: MetricsEngine):
-    """
-    Upgraded version of triage: Uses composite health score 
-    from DuckDB to rank stuck files.
-    """
-    sql = """
-    SELECT r.RO_ID, r.ORG_NM, r.LATEST_STAGE_NM, h.composite_health_score
-    FROM roster_ops r
-    JOIN composite_health_view h ON r.RO_ID = h.RO_ID
-    WHERE r.IS_STUCK = 1
-    ORDER BY h.composite_health_score ASC
-    LIMIT 10
-    """
-    return engine.query(sql)
+    """Backwards-compatible alias: triage with the default weights."""
+    return triage_stuck_ros(engine)

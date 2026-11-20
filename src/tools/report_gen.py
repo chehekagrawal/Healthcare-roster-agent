@@ -3,7 +3,8 @@ import time
 from datetime import datetime
 from fpdf import FPDF
 from src.db.duckdb_engine import MetricsEngine
-from src.tools.data_query import DataQueryTool
+from src.tools.data_query import DataQueryTool, triage_stuck_ros
+from src.paths import SLA_THRESHOLD
 
 class ReportGenerator:
     """
@@ -95,12 +96,13 @@ class ReportGenerator:
         pdf.set_font("Arial", "B", 12)
         pdf.cell(0, 10, "Market Correlation & SLA Impact", ln=True)
         
-        headers = ["Market", "Failed ROs", "Stuck ROs", "Success %"]
+        headers = ["Market", "Failed ROs", "Stuck ROs", "Latest month %", "12-mo avg %"]
         rows = []
         for _, row in market_df.sort_values('SCS_PERCENT', ascending=True).head(5).iterrows():
-            rows.append([str(row['CNT_STATE']), str(row['failed_ros']), str(row['stuck_ros']), f"{row['SCS_PERCENT']}%"])
+            rows.append([str(row['CNT_STATE']), str(row['failed_ros']), str(row['stuck_ros']),
+                         f"{row['SCS_PERCENT']:.2f}% ({row['latest_month']})", f"{row['avg_scs_percent']:.2f}%"])
         
-        self._draw_zebra_table(pdf, headers, rows, [40, 50, 50, 40])
+        self._draw_zebra_table(pdf, headers, rows, [25, 30, 30, 55, 40])
         
         # Footer
         pdf.set_y(-25)
@@ -108,7 +110,9 @@ class ReportGenerator:
         pdf.set_text_color(120, 120, 120)
         pdf.cell(0, 10, "Confidential - RosterIQ Proprietary Intelligence Report", align='C')
 
-        return pdf.output(dest="S").encode("latin-1") if isinstance(pdf.output(dest="S"), str) else pdf.output(dest="S")
+        # fpdf2 returns a bytearray; the old PyFPDF returned a latin-1 str.
+        out = pdf.output()
+        return out.encode("latin-1") if isinstance(out, str) else bytes(out)
 
     def _draw_zebra_table(self, pdf, headers, rows, widths):
         """Helper to draw professional zebra-striped tables."""
@@ -136,13 +140,23 @@ class ReportGenerator:
         stuck_df = self.query_tool.derive_metrics("stuck_duration")
         market_df = self.engine.market_pipeline_correlation()
         avg_health = health_df['composite_health_score'].mean()
+
+        # Most urgent stuck file = highest triage escalation score.
+        triage = triage_stuck_ros(self.engine, limit=1)
+        top_bottleneck = (f"{triage.iloc[0]['RO_ID']} ({triage.iloc[0]['LATEST_STAGE_NM']}, "
+                          f"{triage.iloc[0]['CNT_STATE']})") if not triage.empty else "None"
+        latest_breaches = ", ".join(market_df[market_df['SCS_PERCENT'] < SLA_THRESHOLD]
+                                    .sort_values('SCS_PERCENT')['CNT_STATE'].tolist()[:5])
+        avg_breaches = ", ".join(market_df[market_df['avg_scs_percent'] < SLA_THRESHOLD]
+                                 .sort_values('avg_scs_percent')['CNT_STATE'].tolist()[:5])
         
         report = f"""
 # 📋 Provider Roster Health Summary
 **Health Score:** `{avg_health:.2f} / 1.0` | **Stuck ROs:** `{len(stuck_df)}`
 
-**Top Bottleneck:** {stuck_df.iloc[0]['RO_ID'] if not stuck_df.empty else 'None'}
-**Critical Markets:** {', '.join(market_df[market_df['SCS_PERCENT'] < 95.0]['CNT_STATE'].unique().tolist()[:5])}
+**Top Bottleneck:** {top_bottleneck}
+**Markets below the 95% SLA in their latest month:** {latest_breaches or 'None'}
+**Markets averaging below 95% over 12 months:** {avg_breaches or 'None'}
 
 *Run 'Export PDF' for the high-fidelity diagnostic report.*
 """

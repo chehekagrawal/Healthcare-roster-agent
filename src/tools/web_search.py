@@ -7,6 +7,8 @@ Includes 4 specific templates to satisfy the Web Integration judging criteria.
 """
 
 import os
+import re
+import hashlib
 from typing import Dict, Any, List
 try:
     from tavily import TavilyClient
@@ -58,6 +60,20 @@ class WebSearchTool:
         except Exception as e:
             return {"error": f"Search failed: {str(e)}"}
 
+    @staticmethod
+    def pick_context_type(query: str) -> str:
+        """Chooses the search template from the wording of the question."""
+        q = query.lower()
+        if re.search(r"\b(cms|regulat\w*|rule|rules|policy|mandate|law)\b", q):
+            return "cms_rule_changes"
+        if re.search(r"\b(validation|834|edi)\b", q):
+            return "complete_validation_failure"
+        if re.search(r"\b(lob|line of business|medicare|medicaid|commercial|compliance)\b", q):
+            return "lob_compliance"
+        if re.search(r"\b(hospital|clinic|provider|organi[sz]ation|org)\b", q):
+            return "provider_lookup"
+        return "general"
+
     def _apply_template(self, query: str, context_type: str) -> str:
         """
         4 specific templates mapped directly to the implementation plan:
@@ -82,7 +98,7 @@ class WebSearchTool:
             # "general" or anything else
             return query
 
-    def enrich_semantic_kb(self, search_results: Dict[str, Any], category: str = "Web Research", confidence: float = 0.8) -> bool:
+    def enrich_semantic_kb(self, search_results: Dict[str, Any], category: str = "web_search") -> bool:
         """
         Takes raw results from the `search()` method and injects them into the agent's long-term Semantic KB.
         This fulfills the cross-tier reasoning criteria: Tool Output -> Semantic Memory -> Future Reasoning.
@@ -111,16 +127,20 @@ class WebSearchTool:
             title = res.get('title', 'Unknown Source')
             combined_text += f"- {title}: {content}\n"
 
-        concept_id = f"web_enrichment_{hash(query) % 10000}"
+        # Stable ID: Python's hash() is randomised per process, so the old ID
+        # changed on every run and the same finding was stored again and again.
+        item_id = "web_" + hashlib.md5(query.encode("utf-8")).hexdigest()[:12]
         
         try:
-            semantic_memory.add_knowledge(
-                concept=concept_id,
-                knowledge_text=combined_text.strip(),
+            # (The old call passed concept=/knowledge_text=/confidence=, which
+            # add_knowledge() does not accept, so every save raised TypeError.)
+            return semantic_memory.add_knowledge(
+                item_id=item_id,
+                text=combined_text.strip(),
                 category=category,
-                confidence=confidence
+                concept=context_type,
+                overwrite=True,
             )
-            return True
         except Exception as e:
             print(f"Failed to enrich KB: {e}")
             return False

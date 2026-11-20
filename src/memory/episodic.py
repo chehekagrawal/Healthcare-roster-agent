@@ -4,15 +4,16 @@ import chromadb
 from chromadb.config import Settings
 from datetime import datetime
 from src.memory.semantic import _EMBED_FN
+from src.paths import MEMORY_DB, CHROMADB_PATH
 
 # ==========================================
 # EPISODIC MEMORY DATABASE (SQLite)
 # ==========================================
 # This database handles both Interaction History (Text) 
 # and Data State Snapshots (KPIs over time).
-DB_NAME = "roster_iq_memory.db"
+DB_NAME = MEMORY_DB  # absolute path under ROSTERIQ_HOME
 # Initialize ChromaDB for Semantic Search (Requirement A4)
-chroma_client = chromadb.PersistentClient(path="memory/chromadb")
+chroma_client = chromadb.PersistentClient(path=CHROMADB_PATH, settings=Settings(anonymized_telemetry=False))
 try:
     episodic_collection = chroma_client.get_or_create_collection(name="episodic_memory", embedding_function=_EMBED_FN)
 except ValueError:
@@ -50,15 +51,20 @@ def init_db():
         )
     ''')
     
-    # Keep your existing snapshots table
+    # Snapshots of pipeline state, one set per session (for change detection)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS data_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             snapshot_type TEXT, 
             snapshot_data TEXT, 
-            timestamp DATETIME
+            timestamp DATETIME,
+            session_id TEXT
         )
     ''')
+    # Migrate databases created before snapshots were tagged with a session.
+    cols = [r[1] for r in cursor.execute("PRAGMA table_info(data_snapshots)")]
+    if "session_id" not in cols:
+        cursor.execute("ALTER TABLE data_snapshots ADD COLUMN session_id TEXT")
     
     conn.commit()
     conn.close()
@@ -103,7 +109,9 @@ def log_episodic_event(session_id: str, intent: str, findings: str, kpis: dict, 
     conn.close()
 
     # 2. Log to ChromaDB (Semantic Store for 'What did we investigate before?')
-    episodic_collection.add(
+    # upsert, not add: if the SQLite file was reset but the Chroma folder was
+    # kept, row IDs restart and "add" would collide with old IDs.
+    episodic_collection.upsert(
         documents=[f"Investigation into {intent}. Findings: {findings}"],
         metadatas=[{"session_id": session_id, "severity": severity, "sqlite_id": row_id}],
         ids=[f"event_{row_id}"]
@@ -114,37 +122,64 @@ def log_episodic_event(session_id: str, intent: str, findings: str, kpis: dict, 
 # DATA SNAPSHOT LOGGING (State Change Detection)
 # -------------------------------------------------
 
-def save_data_snapshot(snapshot_type: str, data: list):
+def save_data_snapshot(snapshot_type: str, data, session_id: str = None):
     """
-    Stores the current state of a metric (e.g. list of Stuck RO IDs).
-    Allows the agent to detect if an issue has been resolved since last time.
+    Stores the current state of a metric (e.g. list of stuck RO IDs) for a session.
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     timestamp = datetime.now().isoformat()
     cursor.execute('''
-        INSERT INTO data_snapshots (snapshot_type, snapshot_data, timestamp)
-        VALUES (?, ?, ?)
-    ''', (snapshot_type, json.dumps(data), timestamp))
+        INSERT INTO data_snapshots (snapshot_type, snapshot_data, timestamp, session_id)
+        VALUES (?, ?, ?, ?)
+    ''', (snapshot_type, json.dumps(data), timestamp, session_id))
     conn.commit()
     conn.close()
 
-def get_last_snapshot(snapshot_type: str):
+
+def has_session_snapshot(snapshot_type: str, session_id: str) -> bool:
+    conn = sqlite3.connect(DB_NAME)
+    row = conn.execute(
+        "SELECT 1 FROM data_snapshots WHERE snapshot_type = ? AND session_id = ? LIMIT 1",
+        (snapshot_type, session_id)).fetchone()
+    conn.close()
+    return row is not None
+
+
+def save_session_snapshot_once(snapshot_type: str, data, session_id: str) -> bool:
     """
-    Retrieves the most recent previous snapshot for comparison.
-    Used for: "What changed since my last session?"
+    Saves the snapshot for a session only the first time it is seen.
+    (The app used to save on every Streamlit rerun, so "since last session"
+    really meant "since a few seconds ago".) Returns True if it saved.
+    """
+    if has_session_snapshot(snapshot_type, session_id):
+        return False
+    save_data_snapshot(snapshot_type, data, session_id)
+    return True
+
+
+def get_last_snapshot(snapshot_type: str, exclude_session: str = None):
+    """
+    The most recent snapshot from a DIFFERENT session than `exclude_session`
+    (i.e. "the last session" from the current session's point of view).
+    Without `exclude_session`, returns the most recent snapshot of any session.
     """
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # We look for the previous state (LIMIT 1 OFFSET 1 because current state was just saved)
-    cursor.execute('''
-        SELECT snapshot_data FROM data_snapshots 
-        WHERE snapshot_type = ? 
-        ORDER BY timestamp DESC LIMIT 1 OFFSET 1
-    ''', (snapshot_type,))
+    if exclude_session is None:
+        cursor.execute('''
+            SELECT snapshot_data FROM data_snapshots
+            WHERE snapshot_type = ?
+            ORDER BY timestamp DESC, id DESC LIMIT 1
+        ''', (snapshot_type,))
+    else:
+        cursor.execute('''
+            SELECT snapshot_data FROM data_snapshots
+            WHERE snapshot_type = ? AND (session_id IS NULL OR session_id != ?)
+            ORDER BY timestamp DESC, id DESC LIMIT 1
+        ''', (snapshot_type, exclude_session))
     row = cursor.fetchone()
     conn.close()
-    
     return json.loads(row[0]) if row else None
 
 # -------------------------------------------------
@@ -188,9 +223,12 @@ def retrieve_semantic_history(query: str, n_results: int = 3):
     Performs a semantic search over past investigations using ChromaDB.
     Allows the agent to 'remember' context and past findings across sessions.
     """
+    count = episodic_collection.count()
+    if count == 0:
+        return [[]]
     results = episodic_collection.query(
         query_texts=[query],
-        n_results=n_results
+        n_results=min(n_results, count)
     )
     return results['documents']
 
